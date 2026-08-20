@@ -1,0 +1,29 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-json
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+  - repo: https://github.com/Takishima/cmake-pre-commit-hooks
+    rev: v1.9.6
+    hooks:
+      - id: clang-format
+        args: [-i, --style=Google, --version=22, -Bbuild, -Bbuild-debug, --no-cmake-configure]
+        exclude: '\.cu$'
+      - id: clang-tidy
+        args:
+          [
+            --version=22,
+            -Bbuild,
+            -Bbuild-debug,
+            --no-cmake-configure,
+            --checks=misc-include-cleaner,
+          ]
+        exclude: '\.cu$'
+      - id: cppcheck
+        args: [-Bbuild, -Bbuild-debug, --no-cmake-configure]
+        exclude: '\.cu$'
