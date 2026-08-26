@@ -8,6 +8,7 @@ add_executable(blackhole_tests
   cuda_image_test.cpp
   render_pipeline_test.cpp
   render_test.cpp
+  geodesic_test.cpp
 )
 
 target_link_libraries(blackhole_tests
