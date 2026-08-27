@@ -9,6 +9,7 @@ add_executable(blackhole_tests
   render_pipeline_test.cpp
   render_test.cpp
   geodesic_test.cpp
+  geodesic_device_test.cu
 )
 
 target_link_libraries(blackhole_tests
@@ -16,6 +17,16 @@ target_link_libraries(blackhole_tests
     blackhole::blackhole
     CUDA::cudart
     GTest::gtest_main
+)
+
+# geodesic_device_test.cu is the only CUDA source here. Match the blackhole
+# library (relocatable device code, relaxed constexpr) so device linking against
+# it works and the shared header's constants are usable from kernels.
+set_target_properties(blackhole_tests PROPERTIES
+  CUDA_SEPARABLE_COMPILATION ON
+)
+target_compile_options(blackhole_tests PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
 )
 
 gtest_discover_tests(blackhole_tests)
