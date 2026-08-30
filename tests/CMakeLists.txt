@@ -10,6 +10,7 @@ add_executable(blackhole_tests
   render_test.cpp
   geodesic_test.cpp
   geodesic_device_test.cu
+  camera_test.cpp
 )
 
 target_link_libraries(blackhole_tests
