@@ -6,12 +6,12 @@
 namespace blackhole {
 namespace {
 
-int parseInt(const std::string& option, const std::string& text) {
+int parseInt(const std::string &option, const std::string &text) {
   std::size_t used = 0;
   int value = 0;
   try {
     value = std::stoi(text, &used);
-  } catch (const std::exception&) {
+  } catch (const std::exception &) {
     used = 0;
   }
   if (used == 0 || used != text.size()) {
@@ -21,12 +21,12 @@ int parseInt(const std::string& option, const std::string& text) {
   return value;
 }
 
-float parseFloat(const std::string& option, const std::string& text) {
+float parseFloat(const std::string &option, const std::string &text) {
   std::size_t used = 0;
   float value = 0.0f;
   try {
     value = std::stof(text, &used);
-  } catch (const std::exception&) {
+  } catch (const std::exception &) {
     used = 0;
   }
   if (used == 0 || used != text.size()) {
@@ -36,9 +36,9 @@ float parseFloat(const std::string& option, const std::string& text) {
   return value;
 }
 
-}  // namespace
+} // namespace
 
-CliOptions parseArgs(const std::vector<std::string>& args) {
+CliOptions parseArgs(const std::vector<std::string> &args) {
   CliOptions opts;
   bool haveOutput = false;
 
@@ -55,7 +55,8 @@ CliOptions parseArgs(const std::vector<std::string>& args) {
     }
 
     auto value = [&]() -> std::string {
-      if (hasInline) return inlineValue;
+      if (hasInline)
+        return inlineValue;
       if (i + 1 >= args.size()) {
         throw std::invalid_argument(arg + ": missing value");
       }
@@ -72,6 +73,8 @@ CliOptions parseArgs(const std::vector<std::string>& args) {
       opts.config.observerDistance = parseFloat(arg, value());
     } else if (arg == "--fov") {
       opts.config.fovDegrees = parseFloat(arg, value());
+    } else if (arg == "--elevation") {
+      opts.config.elevationDegrees = parseFloat(arg, value());
     } else if (arg == "-o" || arg == "--output") {
       opts.outputPath = value();
       haveOutput = true;
@@ -98,8 +101,10 @@ std::string usage() {
          "20)\n"
          "  --fov DEG       field of view in degrees, 0 < DEG < 180 (default "
          "60)\n"
+         "  --elevation DEG camera elevation above the disk plane, 0 <= DEG < "
+         "90 (default 10)\n"
          "  -o, --output F  output PNG path (default blackhole.png)\n"
          "  -h, --help      show this message\n";
 }
 
-}  // namespace blackhole
+} // namespace blackhole

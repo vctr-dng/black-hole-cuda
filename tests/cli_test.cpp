@@ -2,12 +2,34 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cctype>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 using blackhole::CliOptions;
 using blackhole::parseArgs;
+
+namespace {
+
+// Expects parseArgs to reject `args` with an error that is about the elevation
+// value, not the generic "unknown option" a CLI without --elevation would give.
+void expectElevationError(const std::vector<std::string> &args) {
+  try {
+    parseArgs(args);
+    ADD_FAILURE() << "expected std::invalid_argument";
+  } catch (const std::invalid_argument &e) {
+    std::string msg = e.what();
+    std::transform(msg.begin(), msg.end(), msg.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    EXPECT_NE(msg.find("elevation"), std::string::npos) << msg;
+    EXPECT_EQ(msg.find("unknown option"), std::string::npos) << msg;
+  }
+}
+
+} // namespace
 
 TEST(CliTest, DefaultsWhenNoArguments) {
   const CliOptions opts = parseArgs({});
@@ -16,6 +38,7 @@ TEST(CliTest, DefaultsWhenNoArguments) {
   EXPECT_EQ(opts.config.height, 600);
   EXPECT_FLOAT_EQ(opts.config.observerDistance, 20.0f);
   EXPECT_FLOAT_EQ(opts.config.fovDegrees, 60.0f);
+  EXPECT_FLOAT_EQ(opts.config.elevationDegrees, 10.0f);
   EXPECT_EQ(opts.outputPath, "blackhole.png");
   EXPECT_FALSE(opts.showHelp);
 }
@@ -23,18 +46,35 @@ TEST(CliTest, DefaultsWhenNoArguments) {
 TEST(CliTest, ParsesAllOptions) {
   const CliOptions opts =
       parseArgs({"--width", "320", "--height", "200", "--distance", "12.5",
-                 "--fov", "90", "--output", "out.png"});
+                 "--fov", "90", "--elevation", "35.5", "--output", "out.png"});
 
   EXPECT_EQ(opts.config.width, 320);
   EXPECT_EQ(opts.config.height, 200);
   EXPECT_FLOAT_EQ(opts.config.observerDistance, 12.5f);
   EXPECT_FLOAT_EQ(opts.config.fovDegrees, 90.0f);
+  EXPECT_FLOAT_EQ(opts.config.elevationDegrees, 35.5f);
   EXPECT_EQ(opts.outputPath, "out.png");
 }
 
 TEST(CliTest, ParsesShortOutputAndEqualsForm) {
   EXPECT_EQ(parseArgs({"-o", "a.png"}).outputPath, "a.png");
   EXPECT_EQ(parseArgs({"--width=64"}).config.width, 64);
+}
+
+TEST(CliTest, ParsesElevation) {
+  EXPECT_FLOAT_EQ(parseArgs({"--elevation", "30"}).config.elevationDegrees,
+                  30.0f);
+  EXPECT_FLOAT_EQ(parseArgs({"--elevation=45.5"}).config.elevationDegrees,
+                  45.5f);
+  // Boundaries of the valid range [0, 90).
+  EXPECT_FLOAT_EQ(parseArgs({"--elevation", "0"}).config.elevationDegrees,
+                  0.0f);
+  EXPECT_FLOAT_EQ(parseArgs({"--elevation", "89.9"}).config.elevationDegrees,
+                  89.9f);
+  // Does not disturb the other options.
+  const CliOptions opts = parseArgs({"--elevation", "5", "--fov", "70"});
+  EXPECT_FLOAT_EQ(opts.config.elevationDegrees, 5.0f);
+  EXPECT_FLOAT_EQ(opts.config.fovDegrees, 70.0f);
 }
 
 TEST(CliTest, PositionalArgumentIsOutputPath) {
@@ -45,6 +85,7 @@ TEST(CliTest, HelpFlag) {
   EXPECT_TRUE(parseArgs({"--help"}).showHelp);
   EXPECT_TRUE(parseArgs({"-h"}).showHelp);
   EXPECT_FALSE(blackhole::usage().empty());
+  EXPECT_NE(blackhole::usage().find("--elevation"), std::string::npos);
 }
 
 TEST(CliTest, RejectsUnknownOption) {
@@ -53,12 +94,16 @@ TEST(CliTest, RejectsUnknownOption) {
 
 TEST(CliTest, RejectsMissingValue) {
   EXPECT_THROW(parseArgs({"--width"}), std::invalid_argument);
+  expectElevationError({"--elevation"});
 }
 
 TEST(CliTest, RejectsNonNumericValues) {
   EXPECT_THROW(parseArgs({"--width", "abc"}), std::invalid_argument);
   EXPECT_THROW(parseArgs({"--width", "12abc"}), std::invalid_argument);
   EXPECT_THROW(parseArgs({"--fov", "wide"}), std::invalid_argument);
+  expectElevationError({"--elevation", "up"});
+  expectElevationError({"--elevation", "10deg"});
+  expectElevationError({"--elevation="});
 }
 
 TEST(CliTest, RejectsInvalidConfigValues) {
@@ -69,6 +114,14 @@ TEST(CliTest, RejectsInvalidConfigValues) {
   EXPECT_THROW(parseArgs({"--fov", "180"}), std::invalid_argument);
 }
 
+TEST(CliTest, RejectsOutOfRangeElevation) {
+  expectElevationError({"--elevation", "-1"});
+  expectElevationError({"--elevation", "90"});
+  expectElevationError({"--elevation", "180"});
+  expectElevationError({"--elevation", "nan"});
+}
+
 TEST(CliTest, RejectsSecondPositionalArgument) {
   EXPECT_THROW(parseArgs({"a.png", "b.png"}), std::invalid_argument);
 }
+
