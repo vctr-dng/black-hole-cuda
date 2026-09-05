@@ -1,9 +1,11 @@
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 
 #include "blackhole/camera.hpp"
+#include "blackhole/geodesic.hpp"
 #include "blackhole/render.hpp"
 
 namespace blackhole {
@@ -19,6 +21,9 @@ void check_cuda(cudaError_t err, const char *what) {
 __device__ std::uint8_t to_byte(float c) {
   return static_cast<std::uint8_t>(lroundf(255.0f * c));
 }
+
+BH_HD geo::Vec3 to_geo(cam::Vec3 v) { return {v.x, v.y, v.z}; }
+BH_HD cam::Vec3 to_cam(geo::Vec3 v) { return {v.x, v.y, v.z}; }
 
 __global__ void flat_sky_kernel(std::uint8_t *rgba, int width, int height,
                                 cam::Camera camera) {
@@ -36,21 +41,37 @@ __global__ void flat_sky_kernel(std::uint8_t *rgba, int width, int height,
   rgba[idx + 3] = 255;
 }
 
-__global__ void fill_placeholder_kernel(std::uint8_t *rgba, int width,
-                                        int height) {
+__device__ std::uint8_t to_byte_clamped(float c) {
+  c = c < 0.0f ? 0.0f : (c > 1.0f ? 1.0f : c);
+  return static_cast<std::uint8_t>(lroundf(255.0f * c));
+}
+
+/// Shades one primary ray: trace, then colour by outcome. Future features
+/// (sky, disk hits, supersampling) hook in here.
+__device__ cam::Vec3 shade_ray(const geo::Ray &ray,
+                               const geo::TraceParams &params) {
+  const geo::TraceResult res = geo::trace(ray, params);
+  if (res.outcome == geo::Outcome::Escaped) {
+    return cam::skyGradient(to_cam(geo::normalize(res.ray.vel)));
+  }
+  return {0.0f, 0.0f, 0.0f};
+}
+
+__global__ void lensing_kernel(std::uint8_t *rgba, int width, int height,
+                               cam::Camera camera, geo::TraceParams params) {
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
   if (x >= width || y >= height) {
     return;
   }
 
+  const geo::Ray ray = geo::makeRay(to_geo(camera.pos),
+                                    to_geo(cam::primaryRayDir(camera, x, y)));
+  const cam::Vec3 c = shade_ray(ray, params);
   const int idx = (y * width + x) * 4;
-  const float u = static_cast<float>(x) / static_cast<float>(width);
-  const float v = static_cast<float>(y) / static_cast<float>(height);
-
-  rgba[idx + 0] = static_cast<std::uint8_t>(u * 255.0f);
-  rgba[idx + 1] = static_cast<std::uint8_t>(v * 255.0f);
-  rgba[idx + 2] = 40;
+  rgba[idx + 0] = to_byte_clamped(c.x);
+  rgba[idx + 1] = to_byte_clamped(c.y);
+  rgba[idx + 2] = to_byte_clamped(c.z);
   rgba[idx + 3] = 255;
 }
 
@@ -152,12 +173,24 @@ Image renderFlat(const RenderConfig &config) {
                        });
 }
 
+geo::TraceParams renderTraceParams(const RenderConfig &config) {
+  geo::TraceParams p;
+  p.rEscape = std::max(40.0f, 2.0f * config.observerDistance);
+  p.maxSteps = 4000;
+  p.nearDisk = false;
+  return p;
+}
+
 Image render(const RenderConfig &config) {
   validate(config);
-  return run_on_device(config.width, config.height, "fill_placeholder_kernel",
+  const cam::Camera camera =
+      cam::makeCamera(config.width, config.height, config.observerDistance,
+                      config.fovDegrees, config.elevationDegrees);
+  const geo::TraceParams params = renderTraceParams(config);
+  return run_on_device(config.width, config.height, "lensing_kernel",
                        [&](std::uint8_t *d, dim3 grid, dim3 block) {
-                         fill_placeholder_kernel<<<grid, block>>>(
-                             d, config.width, config.height);
+                         lensing_kernel<<<grid, block>>>(
+                             d, config.width, config.height, camera, params);
                        });
 }
 

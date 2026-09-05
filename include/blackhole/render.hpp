@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 
+#include "blackhole/geodesic.hpp"
 #include "blackhole/image.hpp"
 
 namespace blackhole {
@@ -26,7 +27,13 @@ void validate(const RenderConfig &config);
 /// std::runtime_error on CUDA failure.
 Image renderFlat(const RenderConfig &config);
 
-/// Render the scene on the GPU. Currently a placeholder gradient.
+/// Integrator parameters render() uses: rEscape = max(40, 2 *
+/// observerDistance), maxSteps = 4000, nearDisk = false.
+geo::TraceParams renderTraceParams(const RenderConfig &config);
+
+/// Render the scene on the GPU: every pixel's primary ray is traced through the
+/// Schwarzschild geodesic integrator. Horizon -> black, Escaped ->
+/// skyGradient(final direction), MaxSteps -> black.
 /// Throws std::invalid_argument on a bad config, std::runtime_error on CUDA
 /// failure.
 Image render(const RenderConfig &config);
