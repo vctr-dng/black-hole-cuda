@@ -57,6 +57,7 @@ add_library(blackhole
   src/image.cpp
   src/image_buffer.cpp
   src/cli.cpp
+  src/sky.cpp
 )
 add_library(blackhole::blackhole ALIAS blackhole)
 
@@ -68,6 +69,7 @@ target_include_directories(blackhole
 target_link_libraries(blackhole
   PUBLIC
     stb::image_write
+    CUDA::cudart
 )
 
 set_target_properties(blackhole PROPERTIES

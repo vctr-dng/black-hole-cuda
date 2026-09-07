@@ -3,7 +3,7 @@
 #include "blackhole/image.hpp"
 #include "blackhole/render.hpp"
 
-#define STB_IMAGE_IMPLEMENTATION
+// stb_image implementation is provided by src/sky.cpp (linked via blackhole).
 #include <algorithm>
 #include <array>
 #include <filesystem>
