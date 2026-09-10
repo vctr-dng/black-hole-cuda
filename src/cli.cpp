@@ -75,6 +75,20 @@ CliOptions parseArgs(const std::vector<std::string> &args) {
       opts.config.fovDegrees = parseFloat(arg, value());
     } else if (arg == "--elevation") {
       opts.config.elevationDegrees = parseFloat(arg, value());
+    } else if (arg == "--sky") {
+      const std::string v = value();
+      if (v.empty()) {
+        throw std::invalid_argument(arg +
+                                    ": expected gradient, starfield or a path");
+      }
+      if (v == "gradient") {
+        opts.config.sky = SkyMode::Gradient;
+      } else if (v == "starfield") {
+        opts.config.sky = SkyMode::Starfield;
+      } else {
+        opts.config.sky = SkyMode::Image;
+        opts.config.skyImagePath = v;
+      }
     } else if (arg == "-o" || arg == "--output") {
       opts.outputPath = value();
       haveOutput = true;
@@ -103,6 +117,8 @@ std::string usage() {
          "60)\n"
          "  --elevation DEG camera elevation above the disk plane, 0 <= DEG < "
          "90 (default 10)\n"
+         "  --sky S         sky: gradient, starfield, or an image path "
+         "(default gradient)\n"
          "  -o, --output F  output PNG path (default blackhole.png)\n"
          "  -h, --help      show this message\n";
 }

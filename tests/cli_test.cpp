@@ -125,3 +125,60 @@ TEST(CliTest, RejectsSecondPositionalArgument) {
   EXPECT_THROW(parseArgs({"a.png", "b.png"}), std::invalid_argument);
 }
 
+namespace {
+
+std::string lowerMsg(const std::vector<std::string> &args) {
+  try {
+    parseArgs(args);
+  } catch (const std::invalid_argument &e) {
+    std::string msg = e.what();
+    std::transform(msg.begin(), msg.end(), msg.begin(), [](unsigned char ch) {
+      return static_cast<char>(std::tolower(ch));
+    });
+    return msg;
+  }
+  ADD_FAILURE() << "expected std::invalid_argument";
+  return {};
+}
+
+// Expects a rejection that mentions `needle` and is not "unknown option".
+void expectErrorMentions(const std::vector<std::string> &args,
+                         const std::string &needle) {
+  const std::string msg = lowerMsg(args);
+  EXPECT_NE(msg.find(needle), std::string::npos) << msg;
+  EXPECT_EQ(msg.find("unknown option"), std::string::npos) << msg;
+}
+
+} // namespace
+
+TEST(CliTest, WiringDefaultsUnchanged) {
+  const CliOptions opts = parseArgs({});
+  EXPECT_EQ(opts.config.sky, blackhole::SkyMode::Gradient);
+}
+
+TEST(CliTest, ParsesSkyKeywordsAndPaths) {
+  EXPECT_EQ(parseArgs({"--sky", "gradient"}).config.sky,
+            blackhole::SkyMode::Gradient);
+  EXPECT_EQ(parseArgs({"--sky=starfield"}).config.sky,
+            blackhole::SkyMode::Starfield);
+  CliOptions opts = parseArgs({"--sky", "textures/milkyway.hdr"});
+  EXPECT_EQ(opts.config.sky, blackhole::SkyMode::Image);
+  EXPECT_EQ(opts.config.skyImagePath, "textures/milkyway.hdr");
+  opts = parseArgs({"--sky=/abs/sky.png"});
+  EXPECT_EQ(opts.config.sky, blackhole::SkyMode::Image);
+  EXPECT_EQ(opts.config.skyImagePath, "/abs/sky.png");
+}
+
+TEST(CliTest, RejectsEmptyOrMissingSky) {
+  expectErrorMentions({"--sky"}, "--sky");
+  expectErrorMentions({"--sky="}, "sky");
+  expectErrorMentions({"--sky", ""}, "sky");
+}
+
+TEST(CliTest, UsageMentionsEveryWiringFlag) {
+  const std::string text = blackhole::usage();
+  for (const char *flag :
+       {"--sky"}) {
+    EXPECT_NE(text.find(flag), std::string::npos) << flag;
+  }
+}

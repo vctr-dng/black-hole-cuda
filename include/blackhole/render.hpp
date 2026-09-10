@@ -9,6 +9,9 @@
 
 namespace blackhole {
 
+/// Background used for rays that escape to infinity.
+enum class SkyMode { Gradient, Starfield, Image };
+
 struct RenderConfig {
   int width = 800;
   int height = 600;
@@ -17,6 +20,8 @@ struct RenderConfig {
   float fovDegrees = 60.0f;       ///< Full vertical field of view, in (0, 180).
   float elevationDegrees = 10.0f; ///< Camera elevation above the disk plane,
                                   ///< in [0, 90). 0 = edge-on.
+  SkyMode sky = SkyMode::Gradient;
+  std::string skyImagePath; ///< Required (non-empty) iff sky == Image.
 };
 
 /// Throws std::invalid_argument if any field of `config` is out of range.

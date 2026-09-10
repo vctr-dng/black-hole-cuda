@@ -65,6 +65,58 @@ TEST(RenderConfigTest, ValidateRejectsBadValues) {
   EXPECT_THROW(blackhole::validate(c), std::invalid_argument);
 }
 
+namespace {
+
+constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+constexpr float kInf = std::numeric_limits<float>::infinity();
+
+std::string lower(std::string msg) {
+  std::transform(msg.begin(), msg.end(), msg.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return msg;
+}
+
+// Expects validate(c) to throw invalid_argument whose message names `field`.
+void expectRejected(const RenderConfig &c, const std::string &field) {
+  try {
+    blackhole::validate(c);
+    ADD_FAILURE() << "expected std::invalid_argument for " << field;
+  } catch (const std::invalid_argument &e) {
+    EXPECT_NE(lower(e.what()).find(lower(field)), std::string::npos)
+        << field << ": " << e.what();
+  }
+}
+
+} // namespace
+
+TEST(RenderConfigTest, WiringDefaultsPreserveCurrentBehavior) {
+  const RenderConfig c;
+  EXPECT_EQ(c.sky, blackhole::SkyMode::Gradient);
+  EXPECT_TRUE(c.skyImagePath.empty());
+}
+
+TEST(RenderConfigTest, ValidateSkyImageNeedsPath) {
+  RenderConfig c;
+  c.sky = blackhole::SkyMode::Image;
+  expectRejected(c, "skyImagePath");
+  c.skyImagePath = "sky.hdr";
+  EXPECT_NO_THROW(blackhole::validate(c));
+}
+
+TEST(RenderConfigTest, SkyImagePathIgnoredUnlessImageMode) {
+  RenderConfig c;
+  c.skyImagePath = "ignored.png";
+  for (const auto mode :
+       {blackhole::SkyMode::Gradient, blackhole::SkyMode::Starfield}) {
+    c.sky = mode;
+    EXPECT_NO_THROW(blackhole::validate(c));
+  }
+  c.sky = blackhole::SkyMode::Starfield;
+  c.skyImagePath.clear();
+  EXPECT_NO_THROW(blackhole::validate(c));
+}
+
 TEST(RenderTest, RejectsInvalidConfigBeforeTouchingTheGpu) {
   RenderConfig c;
   c.width = 0;
