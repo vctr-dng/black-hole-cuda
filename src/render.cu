@@ -1,11 +1,13 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
 #include "blackhole/camera.hpp"
+#include "blackhole/disk.hpp"
 #include "blackhole/geodesic.hpp"
 #include "blackhole/render.hpp"
 #include "blackhole/sky.hpp"
@@ -77,9 +79,43 @@ __device__ cam::Vec3 shade_ray(const geo::Ray &ray,
   return {0.0f, 0.0f, 0.0f};
 }
 
+BH_HD disk::Vec3 to_disk(geo::Vec3 v) { return {v.x, v.y, v.z}; }
+
+/// Opaque-disk variant of shade_ray: the first plane crossing inside the
+/// disk's radial range terminates the ray with the disk radiance.
+__device__ cam::Vec3 shade_ray_disk(geo::Ray ray,
+                                    const geo::TraceParams &params,
+                                    const disk::DiskParams &dp, SkyMode mode,
+                                    cudaTextureObject_t tex) {
+  for (int i = 0; i < params.maxSteps; ++i) {
+    const geo::Vec3 p0 = ray.pos;
+    geo::stepVerlet(ray, geo::adaptiveStep(geo::length(ray.pos), true));
+    const disk::Crossing c = disk::planeCrossing(to_disk(p0), to_disk(ray.pos));
+    if (c.hit) {
+      const float r = disk::length(c.pos);
+      if (disk::inDisk(r, dp)) {
+        const geo::Vec3 v = geo::normalize(ray.vel);
+        const float cosT = disk::dot(disk::orbitalDirection(c.pos),
+                                     disk::Vec3{-v.x, -v.y, -v.z});
+        const disk::Vec3 col = disk::diskRadiance(r, cosT, dp);
+        return {col.x, col.y, col.z};
+      }
+    }
+    const float rad = geo::length(ray.pos);
+    if (rad <= geo::kRs) {
+      return {0.0f, 0.0f, 0.0f};
+    }
+    if (rad >= params.rEscape && geo::dot(ray.pos, ray.vel) > 0.0f) {
+      return background(mode, tex, geo::normalize(ray.vel));
+    }
+  }
+  return {0.0f, 0.0f, 0.0f};
+}
+
 __global__ void lensing_kernel(std::uint8_t *rgba, int width, int height,
                                cam::Camera camera, geo::TraceParams params,
-                               SkyMode mode, cudaTextureObject_t tex) {
+                               SkyMode mode, cudaTextureObject_t tex,
+                               bool useDisk, disk::DiskParams dp) {
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
   const int y = blockIdx.y * blockDim.y + threadIdx.y;
   if (x >= width || y >= height) {
@@ -88,7 +124,8 @@ __global__ void lensing_kernel(std::uint8_t *rgba, int width, int height,
 
   const geo::Ray ray = geo::makeRay(to_geo(camera.pos),
                                     to_geo(cam::primaryRayDir(camera, x, y)));
-  const cam::Vec3 c = shade_ray(ray, params, mode, tex);
+  const cam::Vec3 c = useDisk ? shade_ray_disk(ray, params, dp, mode, tex)
+                              : shade_ray(ray, params, mode, tex);
   const int idx = (y * width + x) * 4;
   rgba[idx + 0] = to_byte_clamped(c.x);
   rgba[idx + 1] = to_byte_clamped(c.y);
@@ -184,6 +221,20 @@ void validate(const RenderConfig &config) {
     throw std::invalid_argument(
         "skyImagePath must be non-empty when sky mode is image");
   }
+  if (!(std::isfinite(config.diskInner) && config.diskInner > 1.0f)) {
+    throw std::invalid_argument("diskInner must be finite and > 1");
+  }
+  if (!(std::isfinite(config.diskOuter) &&
+        config.diskOuter > config.diskInner)) {
+    throw std::invalid_argument("diskOuter must be finite and > diskInner");
+  }
+  if (!(config.diskTempK >= 1000.0f && config.diskTempK <= 40000.0f)) {
+    throw std::invalid_argument("diskTempK must be in [1000, 40000] Kelvin");
+  }
+  if (!(std::isfinite(config.diskBrightness) &&
+        config.diskBrightness >= 0.0f)) {
+    throw std::invalid_argument("diskBrightness must be finite and >= 0");
+  }
 }
 
 Image renderFlat(const RenderConfig &config) {
@@ -219,11 +270,13 @@ Image render(const RenderConfig &config) {
         sky::loadSkyImage(config.skyImagePath));
   }
   const cudaTextureObject_t tex = texture ? texture->texture() : 0;
+  const disk::DiskParams dp{config.diskInner, config.diskOuter,
+                            config.diskTempK, config.diskBrightness};
   return run_on_device(config.width, config.height, "lensing_kernel",
                        [&](std::uint8_t *d, dim3 grid, dim3 block) {
                          lensing_kernel<<<grid, block>>>(
                              d, config.width, config.height, camera, params,
-                             config.sky, tex);
+                             config.sky, tex, config.disk, dp);
                        });
 }
 

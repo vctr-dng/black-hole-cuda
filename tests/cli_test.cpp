@@ -154,6 +154,7 @@ void expectErrorMentions(const std::vector<std::string> &args,
 TEST(CliTest, WiringDefaultsUnchanged) {
   const CliOptions opts = parseArgs({});
   EXPECT_EQ(opts.config.sky, blackhole::SkyMode::Gradient);
+  EXPECT_FALSE(opts.config.disk);
 }
 
 TEST(CliTest, ParsesSkyKeywordsAndPaths) {
@@ -175,10 +176,54 @@ TEST(CliTest, RejectsEmptyOrMissingSky) {
   expectErrorMentions({"--sky", ""}, "sky");
 }
 
+TEST(CliTest, ParsesBooleanFlags) {
+  EXPECT_TRUE(parseArgs({"--disk"}).config.disk);
+  // Boolean flags take no value: the next token is a positional output path.
+  const CliOptions opts = parseArgs({"--disk", "out.png"});
+  EXPECT_TRUE(opts.config.disk);
+  EXPECT_EQ(opts.outputPath, "out.png");
+  EXPECT_THROW(parseArgs({"--disk=1"}), std::invalid_argument);
+}
+
+TEST(CliTest, ParsesNumericWiringOptions) {
+  const CliOptions opts =
+      parseArgs({"--disk-inner", "2.5", "--disk-outer=20", "--disk-temp",
+                 "8000", "--disk-brightness=2"});
+  EXPECT_FLOAT_EQ(opts.config.diskInner, 2.5f);
+  EXPECT_FLOAT_EQ(opts.config.diskOuter, 20.0f);
+  EXPECT_FLOAT_EQ(opts.config.diskTempK, 8000.0f);
+  EXPECT_FLOAT_EQ(opts.config.diskBrightness, 2.0f);
+}
+
+TEST(CliTest, RejectsMissingWiringValues) {
+  expectErrorMentions({"--disk-inner"}, "--disk-inner");
+  expectErrorMentions({"--disk-outer"}, "--disk-outer");
+  expectErrorMentions({"--disk-temp"}, "--disk-temp");
+  expectErrorMentions({"--disk-brightness"}, "--disk-brightness");
+}
+
+TEST(CliTest, RejectsNonNumericWiringValues) {
+  expectErrorMentions({"--disk-inner", "x"}, "--disk-inner");
+  expectErrorMentions({"--disk-outer=big"}, "--disk-outer");
+  expectErrorMentions({"--disk-temp", "hot"}, "--disk-temp");
+  expectErrorMentions({"--disk-brightness", "1x"}, "--disk-brightness");
+}
+
+TEST(CliTest, RejectsOutOfRangeWiringValues) {
+  expectErrorMentions({"--disk-inner", "1"}, "diskinner");
+  expectErrorMentions({"--disk-inner", "nan"}, "diskinner");
+  expectErrorMentions({"--disk-outer", "3"}, "diskouter");
+  expectErrorMentions({"--disk-outer", "inf"}, "diskouter");
+  expectErrorMentions({"--disk-temp", "999"}, "disktempk");
+  expectErrorMentions({"--disk-temp", "40001"}, "disktempk");
+  expectErrorMentions({"--disk-brightness", "-1"}, "diskbrightness");
+}
+
 TEST(CliTest, UsageMentionsEveryWiringFlag) {
   const std::string text = blackhole::usage();
   for (const char *flag :
-       {"--sky"}) {
+       {"--sky", "--disk ", "--disk-inner", "--disk-outer", "--disk-temp",
+        "--disk-brightness"}) {
     EXPECT_NE(text.find(flag), std::string::npos) << flag;
   }
 }

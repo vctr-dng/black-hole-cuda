@@ -63,6 +63,12 @@ CliOptions parseArgs(const std::vector<std::string> &args) {
       return args[++i];
     };
 
+    auto noValue = [&]() {
+      if (hasInline) {
+        throw std::invalid_argument(arg + ": does not take a value");
+      }
+    };
+
     if (arg == "-h" || arg == "--help") {
       opts.showHelp = true;
     } else if (arg == "--width") {
@@ -89,6 +95,17 @@ CliOptions parseArgs(const std::vector<std::string> &args) {
         opts.config.sky = SkyMode::Image;
         opts.config.skyImagePath = v;
       }
+    } else if (arg == "--disk") {
+      noValue();
+      opts.config.disk = true;
+    } else if (arg == "--disk-inner") {
+      opts.config.diskInner = parseFloat(arg, value());
+    } else if (arg == "--disk-outer") {
+      opts.config.diskOuter = parseFloat(arg, value());
+    } else if (arg == "--disk-temp") {
+      opts.config.diskTempK = parseFloat(arg, value());
+    } else if (arg == "--disk-brightness") {
+      opts.config.diskBrightness = parseFloat(arg, value());
     } else if (arg == "-o" || arg == "--output") {
       opts.outputPath = value();
       haveOutput = true;
@@ -119,6 +136,12 @@ std::string usage() {
          "90 (default 10)\n"
          "  --sky S         sky: gradient, starfield, or an image path "
          "(default gradient)\n"
+         "  --disk          enable the accretion disk\n"
+         "  --disk-inner R  disk inner radius, R > 1 (default 3)\n"
+         "  --disk-outer R  disk outer radius, R > inner (default 12)\n"
+         "  --disk-temp K   disk temperature in Kelvin, 1000..40000 (default "
+         "12000)\n"
+         "  --disk-brightness X  disk brightness, X >= 0 (default 1)\n"
          "  -o, --output F  output PNG path (default blackhole.png)\n"
          "  -h, --help      show this message\n";
 }

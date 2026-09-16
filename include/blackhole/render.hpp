@@ -22,6 +22,11 @@ struct RenderConfig {
                                   ///< in [0, 90). 0 = edge-on.
   SkyMode sky = SkyMode::Gradient;
   std::string skyImagePath; ///< Required (non-empty) iff sky == Image.
+  bool disk = false;
+  float diskInner = 3.0f;      ///< Inner disk radius, > 1 (finite).
+  float diskOuter = 12.0f;     ///< Outer disk radius, > diskInner (finite).
+  float diskTempK = 12000.0f;  ///< Disk temperature in Kelvin, [1000, 40000].
+  float diskBrightness = 1.0f; ///< Disk brightness scale, >= 0 (finite).
 };
 
 /// Throws std::invalid_argument if any field of `config` is out of range.

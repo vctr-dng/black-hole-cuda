@@ -18,6 +18,7 @@ add_executable(blackhole_tests
   render_sky_test.cpp
   disk_test.cpp
   disk_device_test.cu
+  render_disk_test.cpp
 )
 
 target_link_libraries(blackhole_tests

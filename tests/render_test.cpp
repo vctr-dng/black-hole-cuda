@@ -94,6 +94,63 @@ TEST(RenderConfigTest, WiringDefaultsPreserveCurrentBehavior) {
   const RenderConfig c;
   EXPECT_EQ(c.sky, blackhole::SkyMode::Gradient);
   EXPECT_TRUE(c.skyImagePath.empty());
+  EXPECT_FALSE(c.disk);
+  EXPECT_FLOAT_EQ(c.diskInner, 3.0f);
+  EXPECT_FLOAT_EQ(c.diskOuter, 12.0f);
+  EXPECT_FLOAT_EQ(c.diskTempK, 12000.0f);
+  EXPECT_FLOAT_EQ(c.diskBrightness, 1.0f);
+}
+
+TEST(RenderConfigTest, ValidateDiskInner) {
+  RenderConfig c;
+  c.diskInner = 1.5f;
+  EXPECT_NO_THROW(blackhole::validate(c));
+  c.diskInner = 11.9f;
+  EXPECT_NO_THROW(blackhole::validate(c));
+  for (const float v : {1.0f, 0.5f, -3.0f, kNaN, kInf, -kInf}) {
+    c = RenderConfig{};
+    c.diskInner = v;
+    expectRejected(c, "diskInner");
+  }
+}
+
+TEST(RenderConfigTest, ValidateDiskOuter) {
+  RenderConfig c;
+  c.diskOuter = 3.5f;
+  EXPECT_NO_THROW(blackhole::validate(c));
+  c.diskOuter = 1000.0f;
+  EXPECT_NO_THROW(blackhole::validate(c));
+  for (const float v : {3.0f, 2.0f, kNaN, kInf, -kInf}) {
+    c = RenderConfig{};
+    c.diskOuter = v;
+    expectRejected(c, "diskOuter");
+  }
+}
+
+TEST(RenderConfigTest, ValidateDiskTemp) {
+  RenderConfig c;
+  for (const float v : {1000.0f, 5000.0f, 40000.0f}) {
+    c.diskTempK = v;
+    EXPECT_NO_THROW(blackhole::validate(c)) << v;
+  }
+  for (const float v : {999.9f, 40000.1f, 0.0f, -1.0f, kNaN, kInf, -kInf}) {
+    c = RenderConfig{};
+    c.diskTempK = v;
+    expectRejected(c, "diskTempK");
+  }
+}
+
+TEST(RenderConfigTest, ValidateDiskBrightness) {
+  RenderConfig c;
+  for (const float v : {0.0f, 0.5f, 100.0f}) {
+    c.diskBrightness = v;
+    EXPECT_NO_THROW(blackhole::validate(c)) << v;
+  }
+  for (const float v : {-0.001f, kNaN, kInf, -kInf}) {
+    c = RenderConfig{};
+    c.diskBrightness = v;
+    expectRejected(c, "diskBrightness");
+  }
 }
 
 TEST(RenderConfigTest, ValidateSkyImageNeedsPath) {
