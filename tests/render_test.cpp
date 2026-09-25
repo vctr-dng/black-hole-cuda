@@ -99,6 +99,10 @@ TEST(RenderConfigTest, WiringDefaultsPreserveCurrentBehavior) {
   EXPECT_FLOAT_EQ(c.diskOuter, 12.0f);
   EXPECT_FLOAT_EQ(c.diskTempK, 12000.0f);
   EXPECT_FLOAT_EQ(c.diskBrightness, 1.0f);
+  EXPECT_FALSE(c.postProcess);
+  EXPECT_FLOAT_EQ(c.exposure, 1.0f);
+  EXPECT_EQ(c.spp, 1);
+  EXPECT_FLOAT_EQ(c.bloomStrength, 0.0f);
 }
 
 TEST(RenderConfigTest, ValidateDiskInner) {
@@ -153,6 +157,45 @@ TEST(RenderConfigTest, ValidateDiskBrightness) {
   }
 }
 
+TEST(RenderConfigTest, ValidateExposure) {
+  RenderConfig c;
+  for (const float v : {0.001f, 1.0f, 50.0f}) {
+    c.exposure = v;
+    EXPECT_NO_THROW(blackhole::validate(c)) << v;
+  }
+  for (const float v : {0.0f, -1.0f, kNaN, kInf, -kInf}) {
+    c = RenderConfig{};
+    c.exposure = v;
+    expectRejected(c, "exposure");
+  }
+}
+
+TEST(RenderConfigTest, ValidateBloomStrength) {
+  RenderConfig c;
+  for (const float v : {0.0f, 0.3f, 10.0f}) {
+    c.bloomStrength = v;
+    EXPECT_NO_THROW(blackhole::validate(c)) << v;
+  }
+  for (const float v : {-0.001f, kNaN, kInf, -kInf}) {
+    c = RenderConfig{};
+    c.bloomStrength = v;
+    expectRejected(c, "bloomStrength");
+  }
+}
+
+TEST(RenderConfigTest, ValidateSppPerfectSquaresOnly) {
+  RenderConfig c;
+  for (const int v : {1, 4, 9, 16, 25, 36, 49, 64}) {
+    c.spp = v;
+    EXPECT_NO_THROW(blackhole::validate(c)) << v;
+  }
+  for (const int v : {0, -1, -4, 2, 3, 5, 8, 10, 63, 65, 81, 100}) {
+    c = RenderConfig{};
+    c.spp = v;
+    expectRejected(c, "spp");
+  }
+}
+
 TEST(RenderConfigTest, ValidateSkyImageNeedsPath) {
   RenderConfig c;
   c.sky = blackhole::SkyMode::Image;
@@ -172,6 +215,13 @@ TEST(RenderConfigTest, SkyImagePathIgnoredUnlessImageMode) {
   c.sky = blackhole::SkyMode::Starfield;
   c.skyImagePath.clear();
   EXPECT_NO_THROW(blackhole::validate(c));
+}
+
+TEST(RenderTest, RejectsInvalidWiringConfigBeforeTouchingTheGpu) {
+  RenderConfig c;
+  c.spp = 2;
+  EXPECT_THROW(blackhole::render(c), std::invalid_argument);
+  EXPECT_THROW(blackhole::renderFlat(c), std::invalid_argument);
 }
 
 TEST(RenderTest, RejectsInvalidConfigBeforeTouchingTheGpu) {

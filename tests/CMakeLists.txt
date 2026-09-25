@@ -13,14 +13,15 @@ add_executable(blackhole_tests
   camera_test.cpp
   render_flat_test.cpp
   render_shadow_test.cpp
+  render_post_test.cpp
+  render_sky_test.cpp
   sky_test.cpp
   sky_gpu_test.cu
-  render_sky_test.cpp
+  post_test.cpp
+  post_device_test.cu
   disk_test.cpp
   disk_device_test.cu
   render_disk_test.cpp
-  post_test.cpp
-  post_device_test.cu
 )
 
 target_link_libraries(blackhole_tests

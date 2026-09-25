@@ -27,6 +27,10 @@ struct RenderConfig {
   float diskOuter = 12.0f;     ///< Outer disk radius, > diskInner (finite).
   float diskTempK = 12000.0f;  ///< Disk temperature in Kelvin, [1000, 40000].
   float diskBrightness = 1.0f; ///< Disk brightness scale, >= 0 (finite).
+  bool postProcess = false;
+  float exposure = 1.0f;      ///< Exposure multiplier, > 0 (finite).
+  int spp = 1;                ///< Samples per pixel: a perfect square <= 64.
+  float bloomStrength = 0.0f; ///< Bloom strength, >= 0 (finite).
 };
 
 /// Throws std::invalid_argument if any field of `config` is out of range.

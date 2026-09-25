@@ -155,6 +155,8 @@ TEST(CliTest, WiringDefaultsUnchanged) {
   const CliOptions opts = parseArgs({});
   EXPECT_EQ(opts.config.sky, blackhole::SkyMode::Gradient);
   EXPECT_FALSE(opts.config.disk);
+  EXPECT_FALSE(opts.config.postProcess);
+  EXPECT_EQ(opts.config.spp, 1);
 }
 
 TEST(CliTest, ParsesSkyKeywordsAndPaths) {
@@ -178,21 +180,29 @@ TEST(CliTest, RejectsEmptyOrMissingSky) {
 
 TEST(CliTest, ParsesBooleanFlags) {
   EXPECT_TRUE(parseArgs({"--disk"}).config.disk);
+  EXPECT_TRUE(parseArgs({"--post"}).config.postProcess);
   // Boolean flags take no value: the next token is a positional output path.
-  const CliOptions opts = parseArgs({"--disk", "out.png"});
+  const CliOptions opts = parseArgs({"--disk", "--post", "out.png"});
   EXPECT_TRUE(opts.config.disk);
+  EXPECT_TRUE(opts.config.postProcess);
   EXPECT_EQ(opts.outputPath, "out.png");
   EXPECT_THROW(parseArgs({"--disk=1"}), std::invalid_argument);
+  EXPECT_THROW(parseArgs({"--post=yes"}), std::invalid_argument);
 }
 
 TEST(CliTest, ParsesNumericWiringOptions) {
   const CliOptions opts =
       parseArgs({"--disk-inner", "2.5", "--disk-outer=20", "--disk-temp",
-                 "8000", "--disk-brightness=2"});
+                 "8000", "--disk-brightness=2", "--exposure", "0.5", "--spp",
+                 "16", "--bloom", "0.25"});
   EXPECT_FLOAT_EQ(opts.config.diskInner, 2.5f);
   EXPECT_FLOAT_EQ(opts.config.diskOuter, 20.0f);
   EXPECT_FLOAT_EQ(opts.config.diskTempK, 8000.0f);
   EXPECT_FLOAT_EQ(opts.config.diskBrightness, 2.0f);
+  EXPECT_FLOAT_EQ(opts.config.exposure, 0.5f);
+  EXPECT_EQ(opts.config.spp, 16);
+  EXPECT_FLOAT_EQ(opts.config.bloomStrength, 0.25f);
+  EXPECT_EQ(parseArgs({"--spp=64"}).config.spp, 64);
 }
 
 TEST(CliTest, RejectsMissingWiringValues) {
@@ -200,6 +210,9 @@ TEST(CliTest, RejectsMissingWiringValues) {
   expectErrorMentions({"--disk-outer"}, "--disk-outer");
   expectErrorMentions({"--disk-temp"}, "--disk-temp");
   expectErrorMentions({"--disk-brightness"}, "--disk-brightness");
+  expectErrorMentions({"--exposure"}, "--exposure");
+  expectErrorMentions({"--spp"}, "--spp");
+  expectErrorMentions({"--bloom"}, "--bloom");
 }
 
 TEST(CliTest, RejectsNonNumericWiringValues) {
@@ -207,6 +220,10 @@ TEST(CliTest, RejectsNonNumericWiringValues) {
   expectErrorMentions({"--disk-outer=big"}, "--disk-outer");
   expectErrorMentions({"--disk-temp", "hot"}, "--disk-temp");
   expectErrorMentions({"--disk-brightness", "1x"}, "--disk-brightness");
+  expectErrorMentions({"--exposure", "high"}, "--exposure");
+  expectErrorMentions({"--spp", "4.5"}, "--spp");
+  expectErrorMentions({"--spp", "four"}, "--spp");
+  expectErrorMentions({"--bloom", ""}, "--bloom");
 }
 
 TEST(CliTest, RejectsOutOfRangeWiringValues) {
@@ -217,13 +234,25 @@ TEST(CliTest, RejectsOutOfRangeWiringValues) {
   expectErrorMentions({"--disk-temp", "999"}, "disktempk");
   expectErrorMentions({"--disk-temp", "40001"}, "disktempk");
   expectErrorMentions({"--disk-brightness", "-1"}, "diskbrightness");
+  expectErrorMentions({"--exposure", "0"}, "exposure");
+  expectErrorMentions({"--exposure", "inf"}, "exposure");
+  expectErrorMentions({"--bloom", "-0.1"}, "bloomstrength");
+  expectErrorMentions({"--spp", "2"}, "spp");
+  expectErrorMentions({"--spp", "0"}, "spp");
+  expectErrorMentions({"--spp", "81"}, "spp");
+}
+
+TEST(CliTest, AcceptsPerfectSquareSpp) {
+  for (const int v : {1, 4, 9, 16, 25, 36, 49, 64}) {
+    EXPECT_EQ(parseArgs({"--spp", std::to_string(v)}).config.spp, v);
+  }
 }
 
 TEST(CliTest, UsageMentionsEveryWiringFlag) {
   const std::string text = blackhole::usage();
   for (const char *flag :
        {"--sky", "--disk ", "--disk-inner", "--disk-outer", "--disk-temp",
-        "--disk-brightness"}) {
+        "--disk-brightness", "--post", "--exposure", "--spp", "--bloom"}) {
     EXPECT_NE(text.find(flag), std::string::npos) << flag;
   }
 }

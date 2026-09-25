@@ -106,6 +106,15 @@ CliOptions parseArgs(const std::vector<std::string> &args) {
       opts.config.diskTempK = parseFloat(arg, value());
     } else if (arg == "--disk-brightness") {
       opts.config.diskBrightness = parseFloat(arg, value());
+    } else if (arg == "--post") {
+      noValue();
+      opts.config.postProcess = true;
+    } else if (arg == "--exposure") {
+      opts.config.exposure = parseFloat(arg, value());
+    } else if (arg == "--spp") {
+      opts.config.spp = parseInt(arg, value());
+    } else if (arg == "--bloom") {
+      opts.config.bloomStrength = parseFloat(arg, value());
     } else if (arg == "-o" || arg == "--output") {
       opts.outputPath = value();
       haveOutput = true;
@@ -142,6 +151,11 @@ std::string usage() {
          "  --disk-temp K   disk temperature in Kelvin, 1000..40000 (default "
          "12000)\n"
          "  --disk-brightness X  disk brightness, X >= 0 (default 1)\n"
+         "  --post          enable post-processing\n"
+         "  --exposure X    exposure multiplier, X > 0 (default 1)\n"
+         "  --spp N         samples per pixel: 1, 4, 9, 16, 25, 36, 49 or 64 "
+         "(default 1)\n"
+         "  --bloom X       bloom strength, X >= 0 (default 0)\n"
          "  -o, --output F  output PNG path (default blackhole.png)\n"
          "  -h, --help      show this message\n";
 }

@@ -5,10 +5,12 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "blackhole/camera.hpp"
 #include "blackhole/disk.hpp"
 #include "blackhole/geodesic.hpp"
+#include "blackhole/post.hpp"
 #include "blackhole/render.hpp"
 #include "blackhole/sky.hpp"
 
@@ -133,6 +135,92 @@ __global__ void lensing_kernel(std::uint8_t *rgba, int width, int height,
   rgba[idx + 3] = 255;
 }
 
+/// Phase-5b HDR pass: mean linear radiance of `spp` jittered samples per pixel.
+__global__ void hdr_kernel(float *hdr, int width, int height,
+                           cam::Camera camera, geo::TraceParams params,
+                           SkyMode mode, cudaTextureObject_t tex, bool useDisk,
+                           disk::DiskParams dp, int spp) {
+  const int x = blockIdx.x * blockDim.x + threadIdx.x;
+  const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= width || y >= height) {
+    return;
+  }
+  float sum[3] = {0.0f, 0.0f, 0.0f};
+  for (int i = 0; i < spp; ++i) {
+    const post::SampleOffset o = post::sampleOffset(i, spp, x, y);
+    const geo::Ray ray =
+        geo::makeRay(to_geo(camera.pos),
+                     to_geo(cam::primaryRayDirSub(camera, x + o.dx, y + o.dy)));
+    const cam::Vec3 c = useDisk ? shade_ray_disk(ray, params, dp, mode, tex)
+                                : shade_ray(ray, params, mode, tex);
+    sum[0] += c.x;
+    sum[1] += c.y;
+    sum[2] += c.z;
+  }
+  const int k = (y * width + x) * 3;
+  for (int c = 0; c < 3; ++c) {
+    hdr[k + c] = sum[c] / static_cast<float>(spp);
+  }
+}
+
+__global__ void blur_kernel(const float *in, float *out, int width, int height,
+                            const float *kern, int radius, bool horizontal) {
+  const int x = blockIdx.x * blockDim.x + threadIdx.x;
+  const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= width || y >= height) {
+    return;
+  }
+  for (int c = 0; c < 3; ++c) {
+    double acc = 0.0;
+    for (int j = -radius; j <= radius; ++j) {
+      int sx = x, sy = y;
+      if (horizontal) {
+        sx = min(max(x + j, 0), width - 1);
+      } else {
+        sy = min(max(y + j, 0), height - 1);
+      }
+      acc += static_cast<double>(kern[j + radius]) *
+             static_cast<double>(in[(sy * width + sx) * 3 + c]);
+    }
+    out[(y * width + x) * 3 + c] = static_cast<float>(acc);
+  }
+}
+
+__global__ void final_kernel(std::uint8_t *rgba, const float *hdr,
+                             const float *blur, int width, int height,
+                             float strength, bool pp, float exposure) {
+  const int x = blockIdx.x * blockDim.x + threadIdx.x;
+  const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= width || y >= height) {
+    return;
+  }
+  const int k = (y * width + x) * 3;
+  post::Vec3 h{hdr[k], hdr[k + 1], hdr[k + 2]};
+  if (blur) {
+    h = post::bloomCombine(h, {blur[k], blur[k + 1], blur[k + 2]}, strength);
+  }
+  std::uint8_t *o = rgba + (y * width + x) * 4;
+  if (pp) {
+    post::packRgba8(post::postProcessPixel(h, exposure), o);
+  } else {
+    o[0] = post::toByte(h.x);
+    o[1] = post::toByte(h.y);
+    o[2] = post::toByte(h.z);
+    o[3] = 255;
+  }
+}
+
+/// RAII device allocation.
+template <typename T> struct DeviceBuffer {
+  T *ptr = nullptr;
+  explicit DeviceBuffer(std::size_t count) {
+    check_cuda(cudaMalloc(&ptr, count * sizeof(T)), "cudaMalloc");
+  }
+  DeviceBuffer(const DeviceBuffer &) = delete;
+  DeviceBuffer &operator=(const DeviceBuffer &) = delete;
+  ~DeviceBuffer() { cudaFree(ptr); }
+};
+
 __global__ void solid_color_kernel(std::uint8_t *rgba, int width, int height,
                                    Pixel color) {
   const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -235,6 +323,19 @@ void validate(const RenderConfig &config) {
         config.diskBrightness >= 0.0f)) {
     throw std::invalid_argument("diskBrightness must be finite and >= 0");
   }
+  if (!(std::isfinite(config.exposure) && config.exposure > 0.0f)) {
+    throw std::invalid_argument("exposure must be finite and > 0");
+  }
+  if (!(std::isfinite(config.bloomStrength) && config.bloomStrength >= 0.0f)) {
+    throw std::invalid_argument("bloomStrength must be finite and >= 0");
+  }
+  bool sppOk = false;
+  for (int k = 1; k <= 8; ++k)
+    sppOk = sppOk || config.spp == k * k;
+  if (!sppOk) {
+    throw std::invalid_argument("spp must be a perfect square in [1, 64] (1, "
+                                "4, 9, 16, 25, 36, 49, 64)");
+  }
 }
 
 Image renderFlat(const RenderConfig &config) {
@@ -272,12 +373,50 @@ Image render(const RenderConfig &config) {
   const cudaTextureObject_t tex = texture ? texture->texture() : 0;
   const disk::DiskParams dp{config.diskInner, config.diskOuter,
                             config.diskTempK, config.diskBrightness};
-  return run_on_device(config.width, config.height, "lensing_kernel",
-                       [&](std::uint8_t *d, dim3 grid, dim3 block) {
-                         lensing_kernel<<<grid, block>>>(
-                             d, config.width, config.height, camera, params,
-                             config.sky, tex, config.disk, dp);
-                       });
+  const bool legacy =
+      !config.postProcess && config.spp == 1 && !(config.bloomStrength > 0.0f);
+  if (legacy) {
+    return run_on_device(config.width, config.height, "lensing_kernel",
+                         [&](std::uint8_t *d, dim3 grid, dim3 block) {
+                           lensing_kernel<<<grid, block>>>(
+                               d, config.width, config.height, camera, params,
+                               config.sky, tex, config.disk, dp);
+                         });
+  }
+  const std::size_t n =
+      static_cast<std::size_t>(config.width) * config.height * 3;
+  const bool bloom = config.bloomStrength > 0.0f;
+  DeviceBuffer<float> hdr(n);
+  std::unique_ptr<DeviceBuffer<float>> tmp, blr, dk;
+  int radius = 0;
+  if (bloom) {
+    tmp = std::make_unique<DeviceBuffer<float>>(n);
+    blr = std::make_unique<DeviceBuffer<float>>(n);
+    const float sigma =
+        std::max(1.0f, 0.01f * static_cast<float>(config.height));
+    const std::vector<float> k = post::gaussianKernel1D(sigma);
+    radius = static_cast<int>(k.size() - 1) / 2;
+    dk = std::make_unique<DeviceBuffer<float>>(k.size());
+    check_cuda(cudaMemcpy(dk->ptr, k.data(), k.size() * sizeof(float),
+                          cudaMemcpyHostToDevice),
+               "cudaMemcpy");
+  }
+  return run_on_device(
+      config.width, config.height, "post_pipeline",
+      [&](std::uint8_t *d, dim3 grid, dim3 block) {
+        hdr_kernel<<<grid, block>>>(hdr.ptr, config.width, config.height,
+                                    camera, params, config.sky, tex,
+                                    config.disk, dp, config.spp);
+        if (bloom) {
+          blur_kernel<<<grid, block>>>(hdr.ptr, tmp->ptr, config.width,
+                                       config.height, dk->ptr, radius, true);
+          blur_kernel<<<grid, block>>>(tmp->ptr, blr->ptr, config.width,
+                                       config.height, dk->ptr, radius, false);
+        }
+        final_kernel<<<grid, block>>>(
+            d, hdr.ptr, bloom ? blr->ptr : nullptr, config.width, config.height,
+            config.bloomStrength, config.postProcess, config.exposure);
+      });
 }
 
 } // namespace blackhole
