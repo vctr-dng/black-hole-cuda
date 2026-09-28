@@ -91,7 +91,8 @@ __device__ cam::Vec3 shade_ray_disk(geo::Ray ray,
                                     cudaTextureObject_t tex) {
   for (int i = 0; i < params.maxSteps; ++i) {
     const geo::Vec3 p0 = ray.pos;
-    geo::stepVerlet(ray, geo::adaptiveStep(geo::length(ray.pos), true));
+    geo::stepVerlet(ray, geo::adaptiveStep(geo::length(ray.pos),
+                                           geo::nearDiskPlane(p0, dp.rOuter)));
     const disk::Crossing c = disk::planeCrossing(to_disk(p0), to_disk(ray.pos));
     if (c.hit) {
       const float r = disk::length(c.pos);

@@ -99,6 +99,12 @@ BH_HD inline float adaptiveStep(float r, bool nearDisk) {
   return dt;
 }
 
+// True where the fine disk-plane step cap applies: within 1 unit of the plane
+// y = 0 and inside the disk's outer radius (plus a margin of 1).
+BH_HD inline bool nearDiskPlane(const Vec3& pos, float diskOuter) {
+  return __builtin_fabsf(pos.y) < 1.0f && length(pos) <= diskOuter + 1.0f;
+}
+
 enum class Outcome { Horizon, Escaped, MaxSteps };
 
 struct TraceParams {

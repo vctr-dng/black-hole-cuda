@@ -821,4 +821,49 @@ TEST(GeodesicTraceTest, RayStartingInsideHorizonIsCapturedImmediately) {
   EXPECT_EQ(t.steps, 1);
 }
 
+// --- nearDiskPlane (step-size policy near the accretion disk) ---------------
+//
+// adaptiveStep's 0.085 cap is only needed where the integrator can cross the
+// disk plane inside the disk: |y| < 1 and r <= diskOuter + 1. Everywhere else
+// the normal step policy (dt up to 0.7) must apply, otherwise the maxSteps
+// budget (4000 * 0.085 = 340 units of path) runs out for far observers.
+
+TEST(NearDiskPlaneTest, TrueNearThePlaneInsideTheDisk) {
+  EXPECT_TRUE(nearDiskPlane({5.0f, 0.0f, 0.0f}, 12.0f));
+  EXPECT_TRUE(nearDiskPlane({0.0f, 0.0f, -8.0f}, 12.0f));
+  EXPECT_TRUE(nearDiskPlane({3.0f, 0.5f, 4.0f}, 12.0f));
+  EXPECT_TRUE(nearDiskPlane({3.0f, 0.99f, 4.0f}, 12.0f));
+  EXPECT_TRUE(nearDiskPlane({3.0f, -0.99f, 4.0f}, 12.0f));  // |y|
+  EXPECT_TRUE(nearDiskPlane({0.0f, 0.0f, 0.0f}, 12.0f));
+}
+
+TEST(NearDiskPlaneTest, FalseAwayFromThePlane) {
+  EXPECT_FALSE(nearDiskPlane({5.0f, 1.01f, 0.0f}, 12.0f));
+  EXPECT_FALSE(nearDiskPlane({5.0f, -1.01f, 0.0f}, 12.0f));
+  EXPECT_FALSE(nearDiskPlane({0.0f, 5.0f, 0.0f}, 12.0f));
+  EXPECT_FALSE(nearDiskPlane({1.0f, 3.0f, 1.0f}, 12.0f));
+  EXPECT_FALSE(nearDiskPlane({0.0f, 20.0f, -20.0f}, 12.0f));  // the camera
+}
+
+TEST(NearDiskPlaneTest, FalseBeyondTheOuterRadiusPlusOne) {
+  EXPECT_TRUE(nearDiskPlane({12.5f, 0.0f, 0.0f}, 12.0f));
+  EXPECT_TRUE(nearDiskPlane({0.0f, 0.0f, 13.0f}, 12.0f));   // r == outer + 1
+  EXPECT_FALSE(nearDiskPlane({13.1f, 0.0f, 0.0f}, 12.0f));
+  EXPECT_FALSE(nearDiskPlane({0.0f, 0.0f, -20.0f}, 12.0f));
+  EXPECT_FALSE(nearDiskPlane({100.0f, 0.0f, 0.0f}, 12.0f));
+  EXPECT_FALSE(nearDiskPlane({0.0f, 0.5f, -150.0f}, 12.0f));
+  // r is the 3-D distance, not the in-plane one.
+  EXPECT_FALSE(nearDiskPlane({9.0f, 0.9f, 9.5f}, 12.0f));  // r = 13.1
+}
+
+TEST(NearDiskPlaneTest, ThresholdScalesWithDiskOuter) {
+  const Vec3 p{20.0f, 0.0f, 0.0f};
+  EXPECT_FALSE(nearDiskPlane(p, 12.0f));
+  EXPECT_FALSE(nearDiskPlane(p, 18.0f));
+  EXPECT_TRUE(nearDiskPlane(p, 19.0f));
+  EXPECT_TRUE(nearDiskPlane(p, 30.0f));
+  EXPECT_TRUE(nearDiskPlane({3.0f, 0.0f, 0.0f}, 3.5f));
+  EXPECT_FALSE(nearDiskPlane({5.0f, 0.0f, 0.0f}, 3.5f));
+}
+
 }  // namespace

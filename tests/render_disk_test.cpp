@@ -2,8 +2,10 @@
 //
 // Kernel semantics under test (per pixel, sky/post at their defaults):
 //   * primary ray = geo::makeRay(camera.pos, primaryRayDir); integrate with
-//     geo::stepVerlet and dt = geo::adaptiveStep(|pos|, nearDisk = true)
-//     (<= 0.085), rEscape = renderTraceParams(config).rEscape, maxSteps = 4000.
+//     geo::stepVerlet and dt = geo::adaptiveStep(|pos|, nearDisk) where
+//     nearDisk = geo::nearDiskPlane(pos at the START of the step, diskOuter)
+//     (|y| < 1 and r <= diskOuter + 1: dt <= 0.085 only there, dt up to 0.7
+//     elsewhere), rEscape = renderTraceParams(config).rEscape, maxSteps = 4000.
 //   * after EACH step, disk::planeCrossing(posBefore, posAfter) (plane y = 0).
 //     The first crossing whose position has r = |pos| in [diskInner,
 //     diskOuter] terminates the ray (opaque disk) with colour
@@ -78,7 +80,7 @@ std::uint8_t quantize(float c) {
 }
 
 // Independent CPU reference of the kernel semantics in the file comment.
-// cfg.disk = false ignores the disk (nearDisk steps are still used).
+// cfg.disk = false ignores the disk (the same step policy is still used).
 RefPixel refPixel(const RenderConfig& cfg, const cam::Camera& camera, int x,
                   int y) {
   const cam::Vec3 d = cam::primaryRayDir(camera, x, y);
@@ -90,7 +92,9 @@ RefPixel refPixel(const RenderConfig& cfg, const cam::Camera& camera, int x,
   RefPixel out;
   for (int i = 0; i < tp.maxSteps; ++i) {
     const geo::Vec3 p0 = ray.pos;
-    geo::stepVerlet(ray, geo::adaptiveStep(geo::length(ray.pos), true));
+    const bool nearPlane = geo::nearDiskPlane(p0, cfg.diskOuter);
+    geo::stepVerlet(ray,
+                    geo::adaptiveStep(geo::length(ray.pos), nearPlane));
     if (cfg.disk) {
       const disk::Crossing cr = disk::planeCrossing(
           {p0.x, p0.y, p0.z}, {ray.pos.x, ray.pos.y, ray.pos.z});
@@ -229,9 +233,9 @@ TEST_P(DiskAgreement, MatchesCpuReference96x54) {
       << a.classMismatch << "/" << a.pixels << " pixels differ";
 }
 
-// The reference uses the nearDisk step cap (dt <= 0.085). The disk colour is
-// smooth, so coarse steps (renderTraceParams' nearDisk = false, dt up to 0.7)
-// change only the interpolated crossing slightly: the +-3 byte test above
+// The reference uses the near-disk step cap (dt <= 0.085) around the disk. The
+// disk colour is smooth, so coarse steps (renderTraceParams' nearDisk = false, dt
+// up to 0.7) change only the interpolated crossing slightly: the +-3 byte test above
 // cannot see that, but a tight +-1 byte comparison can. The same-algorithm
 // GPU render is within +-1 byte on all but a handful of rays (float noise on
 // pixels sitting on a step boundary); coarse steps push ~0.6-0.8% of the
@@ -683,5 +687,117 @@ TEST(RenderDiskTest, AlphaIsOpaqueEverywhere) {
   for (int y = 0; y < 36; ++y)
     for (int x = 0; x < 64; ++x) ASSERT_EQ(ch(a, x, y, 3), 255);
 }
+
+// ---------------------------------------------------------------------------
+// 6. Step policy: the 0.085 cap must apply only near the disk plane
+// ---------------------------------------------------------------------------
+//
+// With the cap on EVERY step, maxSteps = 4000 only buys ~340 units of path, so
+// for observerDistance >~ 113 (rEscape = 2D, path >= 3D) most rays end in
+// MaxSteps and render black even though they escape. With the policy
+// nearDiskPlane() (coarse steps, dt <= 0.7, elsewhere) a ray from D = 200 needs
+// only ~ 700 steps.
+
+constexpr double kDeg = kPi / 180.0;
+
+// Analytic shadow radius in pixels for a pinhole camera at distance D.
+double analyticShadowRadiusPx(const RenderConfig& c) {
+  const double alphaC = std::asin(kBc / c.observerDistance);
+  const double tanHalf = std::tan(c.fovDegrees * kDeg * 0.5);
+  return std::tan(alphaC) / tanHalf * (c.height / 2.0);
+}
+
+double centerDist(const RenderConfig& c, int x, int y) {
+  return std::hypot(x + 0.5 - c.width / 2.0, y + 0.5 - c.height / 2.0);
+}
+
+std::size_t blackCount(const Image& im) {
+  std::size_t n = 0;
+  for (int y = 0; y < im.height(); ++y)
+    for (int x = 0; x < im.width(); ++x) n += isBlack(im, x, y);
+  return n;
+}
+
+// Equivalent radius (px) of the black region: sqrt(black pixels / pi).
+double blackRadiusPx(const Image& im) {
+  return std::sqrt(static_cast<double>(blackCount(im)) / kPi);
+}
+
+class DiskFarObserver : public ::testing::TestWithParam<float> {};
+
+TEST_P(DiskFarObserver, NoBlackPixelsOutsideTheShadow) {
+  SKIP_IF_NO_CUDA_DEVICE();
+  RenderConfig cfg = makeConfig(64, 48, 30.0f);
+  cfg.observerDistance = GetParam();
+  const double R = analyticShadowRadiusPx(cfg);
+  const Image im = blackhole::render(cfg);
+  std::size_t outside = 0, blackOutside = 0;
+  for (int y = 0; y < cfg.height; ++y)
+    for (int x = 0; x < cfg.width; ++x) {
+      if (centerDist(cfg, x, y) <= 1.3 * R) continue;
+      ++outside;
+      blackOutside += isBlack(im, x, y);
+    }
+  ASSERT_GT(outside, 2500u);
+  // Every ray outside the shadow escapes (sky gradient is never pure black for
+  // a ray with direction components > -1: 0.5 + 0.5 d) or hits the disk (a
+  // handful of receding/outer disk pixels may quantise to black). Allow 1%.
+  EXPECT_LE(blackOutside * 100, outside)
+      << "D = " << cfg.observerDistance << ": " << blackOutside << " of "
+      << outside << " pixels outside 1.3x the shadow radius (" << R
+      << " px) are black (path budget exhausted?)";
+}
+
+INSTANTIATE_TEST_SUITE_P(Distances, DiskFarObserver,
+                         ::testing::Values(120.0f, 150.0f, 200.0f));
+
+TEST(RenderDiskTest, DiskOnAndOffImagesAgreeAwayFromTheDisk) {
+  SKIP_IF_NO_CUDA_DEVICE();
+  // At D = 150 and 200 the disk covers < 3% of the frame (12/D rad); lensing
+  // outside it must not depend on the disk flag. Pixels differing by more than
+  // 8 on some channel are allowed up to 2% = 61 (measured with a correct step
+  // policy: 18 at D = 150, 8 at D = 200: the disk footprint and boundary rays);
+  // a path-budget failure blackens ~100% (3070 of 3072).
+  for (float D : {150.0f, 200.0f}) {
+    RenderConfig on = makeConfig(64, 48, 30.0f);
+    on.observerDistance = D;
+    RenderConfig off = on;
+    off.disk = false;
+    const std::size_t changed =
+        changedCount(blackhole::render(on), blackhole::render(off));
+    EXPECT_LE(changed * 100, 64u * 48u * 2u) << "D " << D << ": " << changed;
+  }
+}
+
+// Equivalent shadow radius with an INVISIBLE disk (brightness 0, radii inside
+// the photon sphere so that every crossing it catches is a ray that falls into
+// the hole anyway) must equal the disk-off shadow radius, and the analytic one.
+// The fov is chosen so the shadow is ~8 px: tan(half fov) = tan(alpha_c) * H/2 / 8.
+class DiskShadowConsistency : public ::testing::TestWithParam<float> {};
+
+TEST_P(DiskShadowConsistency, ShadowRadiusMatchesDiskOffRender) {
+  SKIP_IF_NO_CUDA_DEVICE();
+  const float D = GetParam();
+  RenderConfig on = makeConfig(96, 96, 30.0f);
+  on.observerDistance = D;
+  const double tanAlpha = std::tan(std::asin(kBc / D));
+  on.fovDegrees =
+      static_cast<float>(2.0 * std::atan(tanAlpha * 48.0 / 8.0) / kDeg);
+  on.diskInner = 1.1f;
+  on.diskOuter = 1.2f;
+  on.diskBrightness = 0.0f;
+  RenderConfig off = on;
+  off.disk = false;
+  const double R = analyticShadowRadiusPx(on);
+  ASSERT_NEAR(R, 8.0, 0.01);
+  const double rOn = blackRadiusPx(blackhole::render(on));
+  const double rOff = blackRadiusPx(blackhole::render(off));
+  EXPECT_NEAR(rOff, R, 1.0) << "D " << D << " (disk off vs analytic)";
+  EXPECT_NEAR(rOn, rOff, 1.0) << "D " << D << " (disk on vs disk off)";
+  EXPECT_NEAR(rOn, R, 1.0) << "D " << D << " (disk on vs analytic)";
+}
+
+INSTANTIATE_TEST_SUITE_P(Distances, DiskShadowConsistency,
+                         ::testing::Values(20.0f, 60.0f, 120.0f, 150.0f));
 
 }  // namespace
