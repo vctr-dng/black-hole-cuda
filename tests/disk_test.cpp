@@ -535,3 +535,146 @@ TEST(DiskPlaneCrossingTest, MirrorSymmetry) {
     }
   }
 }
+
+// ---------------------------------------------------------------- Doppler cosine
+//
+// dopplerCosine(pos, vel): cosine, in the static observer's frame at the disk
+// crossing, between the gas velocity and the direction the photon travels
+// towards the camera. pos lies in the disk plane (y = 0); vel is the
+// pseudo-Cartesian velocity of the BACKWARD-traced ray there (so the physical
+// photon travels along -vel). The pseudo-Cartesian velocity is NOT the local
+// direction: with h = pos x vel (|h| = b) the local tangential sine is
+//   sin(psi) = b sqrt(1 - 1/r) / r      (ray-plane geometry of Schwarzschild)
+// whereas normalize(vel) has tangential component (b/r) / sqrt(1 + b^2/r^3).
+//
+// Independent oracle below: build the static frame {e_r, orb, up} explicitly,
+// the ray-plane normal h_hat in the plane spanned by {up, orb} (it must be
+// orthogonal to e_r), the unit tangent t = h_hat x e_r, the local travel
+// direction n = sigma cos(psi) e_r + sin(psi) t, and c = orb . (-n). The
+// pseudo-Cartesian input velocity is then built at energy E = 1
+// (|vel|^2 = 1 + b^2/r^3, i.e. radial = sigma sqrt(1 - b^2 (1-1/r)/r^2),
+// tangential = b/r) so that |h| == b exactly.
+
+namespace {
+
+struct D3 {
+  double x, y, z;
+};
+D3 operator+(D3 a, D3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+D3 operator*(D3 a, double s) { return {a.x * s, a.y * s, a.z * s}; }
+double dot3(D3 a, D3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+D3 cross3(D3 a, D3 b) {
+  return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+struct DopplerCase {
+  Vec3 pos, vel;
+  double oracle;
+  double r, b;
+};
+
+// Returns false if no real ray with these parameters exists at radius r
+// (b sqrt(1 - 1/r) / r >= 1).
+bool makeDopplerCase(double r, double phi, double b, double chi, double sigma,
+                     DopplerCase* out) {
+  const double sinPsi = b * std::sqrt(1.0 - 1.0 / r) / r;
+  if (sinPsi >= 0.98) return false;
+  const double cosPsi = std::sqrt(1.0 - sinPsi * sinPsi);
+  const D3 er{std::cos(phi), 0.0, std::sin(phi)};
+  const D3 orb{std::sin(phi), 0.0, -std::cos(phi)};  // = orbitalDirection
+  const D3 up{0.0, 1.0, 0.0};
+  const D3 hhat = up * std::cos(chi) + orb * std::sin(chi);
+  const D3 t = cross3(hhat, er);
+  const D3 n = er * (sigma * cosPsi) + t * sinPsi;  // local travel direction
+  const double c = dot3(orb, n * -1.0);
+  const double radial = sigma * std::sqrt(1.0 - sinPsi * sinPsi);  // (dr/ds)
+  // pseudo-Cartesian velocity: radial part + (b/r) tangential, E = 1
+  const D3 vel = er * radial + t * (b / r);
+  out->pos = {static_cast<float>(r * er.x), 0.0f,
+              static_cast<float>(r * er.z)};
+  out->vel = {static_cast<float>(vel.x), static_cast<float>(vel.y),
+              static_cast<float>(vel.z)};
+  out->oracle = c;
+  out->r = r;
+  out->b = b;
+  return true;
+}
+
+}  // namespace
+
+TEST(DiskDopplerCosineTest, MatchesFirstPrinciplesOracleOnGrid) {
+  // Float error budget: a cross product, a sqrt and a few multiplies on O(1)
+  // numbers, ~1e-6; 1e-5 is a tight but safe bound, and the old formula is off
+  // by 1e-2 .. 1e-1 on this grid.
+  int n = 0;
+  for (double r : {3.0, 4.0, 6.0, 12.0})
+    for (double phi : {0.0, 1.5707963267948966, 3.141592653589793, 0.7, 2.3,
+                       4.0})
+      for (double b : {1.0, 3.0, 6.0})
+        for (double chi : {0.0, 3.141592653589793, 1.5707963267948966, 0.4, 2.5,
+                           -1.2})
+          for (double sigma : {1.0, -1.0}) {
+            DopplerCase k;
+            if (!makeDopplerCase(r, phi, b, chi, sigma, &k)) continue;
+            ++n;
+            const float c = disk::dopplerCosine(k.pos, k.vel);
+            EXPECT_NEAR(c, k.oracle, 1e-5)
+                << "r " << r << " phi " << phi << " b " << b << " chi " << chi
+                << " sigma " << sigma;
+            EXPECT_LE(std::fabs(c), 1.0f + 1e-6f);
+          }
+  EXPECT_GE(n, 250) << "grid unexpectedly sparse";
+}
+
+TEST(DiskDopplerCosineTest, OldNormalizedVelocityFormulaIsMeasurablyWrong) {
+  // Non-vacuity: at r = 3, b = 1 (ray plane normal along -y, i.e. gas
+  // approaching) the exact cosine is sin(psi) = sqrt(2/3)/3 = 0.2722 while the
+  // normalised pseudo-Cartesian velocity gives ~0.327 (20% off). The oracle
+  // must therefore sit > 5% away from the old formula.
+  DopplerCase k;
+  ASSERT_TRUE(makeDopplerCase(3.0, 0.0, 1.0, 3.141592653589793, 1.0, &k));
+  const Vec3 vn = disk::normalize(k.vel);
+  const float oldC = disk::dot(disk::orbitalDirection(k.pos),
+                               Vec3{-vn.x, -vn.y, -vn.z});
+  EXPECT_NEAR(k.oracle, 0.272166, 1e-5);
+  EXPECT_GT(std::fabs(oldC - k.oracle), 0.05 * std::fabs(k.oracle))
+      << "old " << oldC << " exact " << k.oracle;
+  EXPECT_NEAR(disk::dopplerCosine(k.pos, k.vel), 0.272166, 1e-5);
+}
+
+TEST(DiskDopplerCosineTest, ApproachingSideBlueshiftedRecedingRedshifted) {
+  // Camera at -z looking +z, ray ~ +z. Gas at +x moves along -z (towards the
+  // camera): orbitalDirection((3,0,0)) = (0,0,-1). A ray travelling along +z
+  // through (3,0,0) has h = pos x vel = (0,-3,0), b = 3, so
+  //   c = -h.y sqrt(1-1/r)/r = +3 sqrt(2/3)/3 = +0.8165 > 0 and
+  //   g = gFactor(3, c) = 0.7071/(1 - 0.5 * 0.8165) = 1.195 > 1.
+  // Mirror image at -x: h = (0,+3,0) => c = -0.8165, g = 0.502 < 1. (The old
+  // formula returns +-1.0 here.)
+  const Vec3 vel{0, 0, 1};
+  const float cA = disk::dopplerCosine({3, 0, 0}, vel);
+  const float cR = disk::dopplerCosine({-3, 0, 0}, vel);
+  EXPECT_NEAR(cA, 0.816497f, 1e-5f);
+  EXPECT_NEAR(cR, -0.816497f, 1e-5f);
+  EXPECT_GT(disk::gFactor(3.0f, cA), 1.0f);
+  EXPECT_LT(disk::gFactor(3.0f, cR), 1.0f);
+  EXPECT_NEAR(disk::gFactor(3.0f, cA), 0.7071068f / (1.0f - 0.5f * cA), 1e-5f);
+}
+
+TEST(DiskDopplerCosineTest, PlaneContainingTheSpinAxisHasNoDoppler) {
+  // A ray whose plane contains the y axis (h.y = 0) moves along e_r / up only:
+  // zero tangential velocity component along the orbit, c = 0 exactly,
+  // whatever its radial or vertical direction.
+  EXPECT_NEAR(disk::dopplerCosine({3, 0, 0}, {-0.6f, -0.8f, 0}), 0.0f, 1e-6f);
+  EXPECT_NEAR(disk::dopplerCosine({0, 0, 5}, {0, 0.3f, -0.9f}), 0.0f, 1e-6f);
+}
+
+TEST(DiskDopplerCosineTest, ScalesWithImpactParameterAndRadius) {
+  // c = -h.y sqrt(1-1/r)/r is linear in |h|: doubling the tangential velocity
+  // at fixed pos doubles c (the old normalised formula saturates instead).
+  const Vec3 pos{6, 0, 0};
+  const float c1 = disk::dopplerCosine(pos, {-0.9f, 0, 0.1f});
+  const float c2 = disk::dopplerCosine(pos, {-0.9f, 0, 0.2f});
+  EXPECT_GT(c1, 0.0f);  // h.y = -(6*0.1) => approaching
+  EXPECT_NEAR(c2, 2.0f * c1, 1e-5f);
+  EXPECT_NEAR(c1, 0.6f * std::sqrt(1.0f - 1.0f / 6.0f) / 6.0f, 1e-6f);
+}

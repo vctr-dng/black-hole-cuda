@@ -60,6 +60,13 @@ BH_HD inline float gFactor(float r, float c) {
   const float gamma = 1.0f / sqrtf(1.0f - v * v);
   return sqrtf(1.0f - 1.0f / r) / (gamma * (1.0f - v * c));
 }
+// Exact static-frame cosine between the photon direction (reversed) and the
+// orbital direction at `pos`: -h.y * sqrt(1 - 1/r) / r, with h = pos x vel.
+BH_HD inline float dopplerCosine(const Vec3 &pos, const Vec3 &vel) {
+  const Vec3 h = cross(pos, vel);
+  const float r = length(pos);
+  return -h.y * sqrtf(1.0f - 1.0f / r) / r;
+}
 BH_HD inline float gFactorForRay(Vec3 pos, Vec3 rayDir) {
   return gFactor(length(pos), dot(orbitalDirection(pos), rayDir * -1.0f));
 }

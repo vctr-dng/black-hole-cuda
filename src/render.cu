@@ -97,9 +97,7 @@ __device__ cam::Vec3 shade_ray_disk(geo::Ray ray,
     if (c.hit) {
       const float r = disk::length(c.pos);
       if (disk::inDisk(r, dp)) {
-        const geo::Vec3 v = geo::normalize(ray.vel);
-        const float cosT = disk::dot(disk::orbitalDirection(c.pos),
-                                     disk::Vec3{-v.x, -v.y, -v.z});
+        const float cosT = disk::dopplerCosine(c.pos, to_disk(ray.vel));
         const disk::Vec3 col = disk::diskRadiance(r, cosT, dp);
         return {col.x, col.y, col.z};
       }

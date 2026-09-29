@@ -10,7 +10,9 @@
 //     The first crossing whose position has r = |pos| in [diskInner,
 //     diskOuter] terminates the ray (opaque disk) with colour
 //       disk::diskRadiance(r, cosTheta, params),
-//       cosTheta = dot(orbitalDirection(pos), -normalize(vel after the step)),
+//       cosTheta = disk::dopplerCosine(pos, vel after the step)
+//                = -h.y sqrt(1 - 1/r) / r with h = pos x vel (exact static-frame
+//                value; NOT the normalised pseudo-Cartesian velocity),
 //     params = {diskInner, diskOuter, diskTempK, diskBrightness}. Crossings
 //     outside the radial range are ignored.
 //   * otherwise Horizon (r <= 1) and MaxSteps -> black, Escaped (r >= rEscape
@@ -61,6 +63,8 @@ enum class Kind { Shadow, Disk, Sky };
 struct RefPixel {
   Kind kind = Kind::Shadow;
   std::uint8_t rgb[3] = {0, 0, 0};
+  float raw[3] = {0, 0, 0};  // unquantised disk radiance (NaN is visible here)
+  float hitR = 0.0f;         // disk crossing radius (Kind::Disk only)
 };
 
 RenderConfig makeConfig(int w, int h, float el, bool withDisk = true) {
@@ -81,11 +85,14 @@ std::uint8_t quantize(float c) {
 
 // Independent CPU reference of the kernel semantics in the file comment.
 // cfg.disk = false ignores the disk (the same step policy is still used).
-RefPixel refPixel(const RenderConfig& cfg, const cam::Camera& camera, int x,
-                  int y) {
+// `cosFn(crossingPos, velAfterStep, initialRay)` supplies the Doppler cosine.
+template <class CosFn>
+RefPixel refPixelWith(const RenderConfig& cfg, const cam::Camera& camera, int x,
+                      int y, CosFn cosFn) {
   const cam::Vec3 d = cam::primaryRayDir(camera, x, y);
   geo::Ray ray = geo::makeRay({camera.pos.x, camera.pos.y, camera.pos.z},
                               {d.x, d.y, d.z});
+  const geo::Ray ray0 = ray;
   const geo::TraceParams tp = blackhole::renderTraceParams(cfg);
   const disk::DiskParams dp{cfg.diskInner, cfg.diskOuter, cfg.diskTempK,
                             cfg.diskBrightness};
@@ -99,12 +106,16 @@ RefPixel refPixel(const RenderConfig& cfg, const cam::Camera& camera, int x,
       const disk::Crossing cr = disk::planeCrossing(
           {p0.x, p0.y, p0.z}, {ray.pos.x, ray.pos.y, ray.pos.z});
       if (cr.hit && disk::inDisk(disk::length(cr.pos), dp)) {
-        const geo::Vec3 v = geo::normalize(ray.vel);
-        const float cosT = disk::dot(disk::orbitalDirection(cr.pos),
-                                     disk::Vec3{-v.x, -v.y, -v.z});
+        const float cosT = cosFn(cr.pos, disk::Vec3{ray.vel.x, ray.vel.y,
+                                                    ray.vel.z},
+                                 ray0);
         const disk::Vec3 c =
             disk::diskRadiance(disk::length(cr.pos), cosT, dp);
         out.kind = Kind::Disk;
+        out.hitR = disk::length(cr.pos);
+        out.raw[0] = c.x;
+        out.raw[1] = c.y;
+        out.raw[2] = c.z;
         out.rgb[0] = quantize(c.x);
         out.rgb[1] = quantize(c.y);
         out.rgb[2] = quantize(c.z);
@@ -126,6 +137,35 @@ RefPixel refPixel(const RenderConfig& cfg, const cam::Camera& camera, int x,
   return out;  // MaxSteps -> black
 }
 
+// Mirror of the kernel: Doppler cosine = disk::dopplerCosine(pos, vel).
+RefPixel refPixel(const RenderConfig& cfg, const cam::Camera& camera, int x,
+                  int y) {
+  return refPixelWith(cfg, camera, x, y,
+                      [](const disk::Vec3& pos, const disk::Vec3& vel,
+                         const geo::Ray&) { return disk::dopplerCosine(pos, vel); });
+}
+
+// Exact static-frame Doppler cosine from the camera ray's conserved quantities
+// (independent of dopplerCosine). A ray started with |vel| = 1 at distance D
+// with h0 = pos0 x vel0 has energy E = 1 - |h0|^2 / D^3 (E = |v|^2 - h2/r^3),
+// hence effective impact parameter b = |h0| / sqrt(E) and, since the ray-plane
+// normal h0 / |h0| is conserved,
+//   c = -(b h_hat.y) sqrt(1 - 1/r) / r = -(h0.y / sqrt(E)) sqrt(1 - 1/r) / r.
+float exactCosine(const disk::Vec3& pos, const geo::Ray& ray0) {
+  const geo::Vec3 h = geo::cross(ray0.pos, ray0.vel);
+  const float D = geo::length(ray0.pos);
+  const float e = 1.0f - geo::dot(h, h) / (D * D * D);
+  const float r = disk::length(pos);
+  return -(h.y / std::sqrt(e)) * std::sqrt(1.0f - 1.0f / r) / r;
+}
+
+RefPixel refPixelExact(const RenderConfig& cfg, const cam::Camera& camera,
+                       int x, int y) {
+  return refPixelWith(cfg, camera, x, y,
+                      [](const disk::Vec3& pos, const disk::Vec3&,
+                         const geo::Ray& ray0) { return exactCosine(pos, ray0); });
+}
+
 struct RefImage {
   int w = 0, h = 0;
   std::vector<RefPixel> px;
@@ -137,7 +177,7 @@ struct RefImage {
   }
 };
 
-RefImage refRender(const RenderConfig& cfg) {
+RefImage refRender(const RenderConfig& cfg, bool exactDoppler = false) {
   const cam::Camera camera =
       cam::makeCamera(cfg.width, cfg.height, cfg.observerDistance,
                       cfg.fovDegrees, cfg.elevationDegrees);
@@ -146,7 +186,9 @@ RefImage refRender(const RenderConfig& cfg) {
   r.h = cfg.height;
   r.px.resize(static_cast<std::size_t>(cfg.width) * cfg.height);
   for (int y = 0; y < cfg.height; ++y)
-    for (int x = 0; x < cfg.width; ++x) r.px[y * cfg.width + x] = refPixel(cfg, camera, x, y);
+    for (int x = 0; x < cfg.width; ++x)
+      r.px[y * cfg.width + x] = exactDoppler ? refPixelExact(cfg, camera, x, y)
+                                             : refPixel(cfg, camera, x, y);
   return r;
 }
 
@@ -799,5 +841,116 @@ TEST_P(DiskShadowConsistency, ShadowRadiusMatchesDiskOffRender) {
 
 INSTANTIATE_TEST_SUITE_P(Distances, DiskShadowConsistency,
                          ::testing::Values(20.0f, 60.0f, 120.0f, 150.0f));
+
+// ---------------------------------------------------------------------------
+// 7. Exact Doppler cosine
+// ---------------------------------------------------------------------------
+
+TEST(RenderDiskTest, DopplerCosineMatchesExactForTracedRays) {
+  // CPU only. For real traced rays at the disk crossing,
+  // disk::dopplerCosine(pos, vel) must equal the cosine derived from the
+  // camera ray's conserved quantities (exactCosine). D = 100 with a 16 degree
+  // fov keeps the camera ray's energy E = 1 - b^2/D^3 within 1.5e-4 of 1, so
+  // the simple form -h.y sqrt(1-1/r)/r and the energy-normalised one agree;
+  // measured worst error 1.3e-4 (interpolated crossing point, float noise)
+  // versus 4.4e-2 for the old normalised-velocity formula. Bound: 1e-3.
+  RenderConfig cfg = makeConfig(64, 36, 30.0f);
+  cfg.observerDistance = 100.0f;
+  cfg.fovDegrees = 16.0f;
+  const cam::Camera camera =
+      cam::makeCamera(cfg.width, cfg.height, cfg.observerDistance,
+                      cfg.fovDegrees, cfg.elevationDegrees);
+  int n = 0;
+  double worst = 0.0;
+  for (int y = 0; y < cfg.height; ++y)
+    for (int x = 0; x < cfg.width; ++x) {
+      const cam::Vec3 d = cam::primaryRayDir(camera, x, y);
+      geo::Ray ray = geo::makeRay({camera.pos.x, camera.pos.y, camera.pos.z},
+                                  {d.x, d.y, d.z});
+      const geo::Ray ray0 = ray;
+      for (int i = 0; i < 4000; ++i) {
+        const geo::Vec3 p0 = ray.pos;
+        geo::stepVerlet(ray, geo::adaptiveStep(geo::length(ray.pos), true));
+        const disk::Crossing cr = disk::planeCrossing(
+            {p0.x, p0.y, p0.z}, {ray.pos.x, ray.pos.y, ray.pos.z});
+        if (cr.hit && disk::length(cr.pos) >= 3.0f &&
+            disk::length(cr.pos) <= 12.0f) {
+          const disk::Vec3 vel{ray.vel.x, ray.vel.y, ray.vel.z};
+          const double c = disk::dopplerCosine(cr.pos, vel);
+          const double e = exactCosine(cr.pos, ray0);
+          worst = std::max(worst, std::fabs(c - e));
+          EXPECT_LE(std::fabs(c), 1.0 + 1e-5);
+          ++n;
+          break;
+        }
+        const float rad = geo::length(ray.pos);
+        if (rad <= geo::kRs || rad > 100.0f) break;
+      }
+    }
+  EXPECT_GT(n, 300);
+  EXPECT_LE(worst, 1e-3) << "worst |dopplerCosine - exact| over " << n
+                         << " traced disk crossings";
+}
+
+TEST(RenderDiskTest, GpuMatchesExactDopplerReference) {
+  SKIP_IF_NO_CUDA_DEVICE();
+  // Disk pixels computed with the exact cosine (reference independent of
+  // dopplerCosine) vs the GPU. Measured max-channel byte differences: exact
+  // kernel 0 or 1 byte on every disk pixel (quantisation + float noise; the
+  // simple -h.y sqrt(1-1/r)/r form ignores the energy normalisation
+  // E = 1 - b^2/D^3 of a finite-D camera, worth < 0.5% of c, still <= 1 byte);
+  // the old normalised-velocity cosine leaves 3.5% (el 30) to 6% (el 10) of the
+  // disk pixels >= 2 bytes off. Allow 0.5% (>= 2 bytes off).
+  for (float el : {10.0f, 30.0f}) {
+    const RenderConfig cfg = makeConfig(96, 54, el);
+    const RefImage ref = refRender(cfg, /*exactDoppler=*/true);
+    const Image gpu = blackhole::render(cfg);
+    std::size_t disks = 0, off = 0;
+    for (int y = 0; y < ref.h; ++y)
+      for (int x = 0; x < ref.w; ++x) {
+        if (ref.at(x, y).kind != Kind::Disk) continue;
+        ++disks;
+        bool bad = false;
+        for (int c = 0; c < 3; ++c)
+          bad = bad || std::abs(ch(gpu, x, y, c) - int(ref.at(x, y).rgb[c])) > 1;
+        off += bad;
+      }
+    ASSERT_GT(disks, 300u) << "el " << el;
+    EXPECT_LE(off * 200, disks)
+        << "el " << el << ": " << off << " of " << disks
+        << " disk pixels differ by > 1 byte from the exact-Doppler reference";
+  }
+}
+
+TEST(RenderDiskTest, ApproachingToRecedingRatioMatchesExactDoppler) {
+  SKIP_IF_NO_CUDA_DEVICE();
+  // Right/left mean luminance of the disk pixels: GPU vs the exact-Doppler
+  // reference quantised the same way. The old formula over-estimates the ratio
+  // by +4.1% (el 10) / +2.3% (el 30); the exact kernel is within 0.3%. Bound: 1%.
+  for (float el : {10.0f, 30.0f}) {
+    const RenderConfig cfg = makeConfig(192, 108, el);
+    const RefImage ref = refRender(cfg, /*exactDoppler=*/true);
+    const Image gpu = blackhole::render(cfg);
+    double g[2] = {0, 0}, e[2] = {0, 0};
+    int n[2] = {0, 0};
+    for (int y = 0; y < ref.h; ++y)
+      for (int x = 0; x < ref.w; ++x)
+        if (ref.at(x, y).kind == Kind::Disk) {
+          const int side = x >= ref.w / 2 ? 1 : 0;
+          g[side] += lum(gpu, x, y);
+          e[side] += ref.at(x, y).rgb[0] + ref.at(x, y).rgb[1] +
+                     ref.at(x, y).rgb[2];
+          ++n[side];
+        }
+    ASSERT_GT(n[0], 300) << "el " << el;
+    ASSERT_GT(n[1], 300) << "el " << el;
+    const double gpuRatio = (g[1] / n[1]) / (g[0] / n[0]);
+    const double exactRatio = (e[1] / n[1]) / (e[0] / n[0]);
+    EXPECT_GE(gpuRatio, 2.0) << "el " << el;
+    EXPECT_LE(gpuRatio, 8.0) << "el " << el;
+    EXPECT_NEAR(gpuRatio / exactRatio, 1.0, 0.01)
+        << "el " << el << ": GPU ratio " << gpuRatio << " exact " << exactRatio;
+  }
+}
 
 }  // namespace
