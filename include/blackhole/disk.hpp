@@ -56,7 +56,8 @@ BH_HD inline Vec3 orbitalDirection(Vec3 pos) {
   return normalize(Vec3{pos.z, 0.0f, -pos.x});
 }
 BH_HD inline float gFactor(float r, float c) {
-  const float v = orbitalSpeedLocal(r);
+  // Clamp just below c so gamma stays finite (orbitalSpeedLocal -> 1 at r=1.5).
+  const float v = fminf(orbitalSpeedLocal(r), 1.0f - 1e-4f);
   const float gamma = 1.0f / sqrtf(1.0f - v * v);
   return sqrtf(1.0f - 1.0f / r) / (gamma * (1.0f - v * c));
 }

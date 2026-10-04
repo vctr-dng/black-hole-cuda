@@ -536,6 +536,58 @@ TEST(DiskPlaneCrossingTest, MirrorSymmetry) {
   }
 }
 
+// ---------------------------------------------------------------- g: NaN guard
+//
+// orbitalSpeedLocal(r) = sqrt(0.5 / (r - 1)) is >= 1 for r <= 1.5 (no timelike
+// circular orbit inside the photon sphere), so the textbook gamma is NaN there
+// (and inf/inf at r == 1.5, c == 1). gFactor must nevertheless stay finite and
+// non-negative for every r > 1 and c in [-1, 1] (the renderer can ask for
+// diskInner down to 1+). orbitalSpeedLocal itself is pinned elsewhere and not
+// touched here.
+
+TEST(DiskDopplerTest, GFactorIsFiniteAndNonNegativeInsidePhotonSphere) {
+  for (float r : {1.00001f, 1.0001f, 1.05f, 1.2f, 1.4f, 1.4999f, 1.5f,
+                  std::nextafter(1.5f, 2.0f), 1.5001f, 1.6f, 2.0f}) {
+    for (float c : {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f}) {
+      const float g = disk::gFactor(r, c);
+      EXPECT_TRUE(std::isfinite(g)) << "r " << r << " c " << c << " g " << g;
+      EXPECT_GE(g, 0.0f) << "r " << r << " c " << c << " g " << g;
+    }
+  }
+}
+
+TEST(DiskDopplerTest, GFactorClosedFormUnchangedOutsidePhotonSphere) {
+  // The NaN guard may only clamp v when it reaches 1; for r >= 1.6
+  // (v <= 0.913) the closed form g = sqrt((r-1.5)/r) / (1 - v c) must hold to
+  // float precision (~1e-6; 2e-5 leaves headroom, a clamp of v at e.g. 0.9 or
+  // a softened gamma would break it by >> 1e-3).
+  for (float r : {1.6f, 1.75f, 2.0f, 3.0f, 9.0f}) {
+    for (float c : {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f}) {
+      EXPECT_NEAR(disk::gFactor(r, c), gRef(r, c), 2e-5f * gRef(r, c))
+          << "r " << r << " c " << c;
+    }
+  }
+  EXPECT_NEAR(disk::gFactor(3.0f, 1.0f), kSqrt2, 1e-5f);
+  EXPECT_NEAR(disk::gFactor(3.0f, -1.0f), 0.4714045f, 1e-5f);
+  EXPECT_NEAR(disk::gFactor(9.0f, 1.0f), 1.2171612f, 1e-5f);
+}
+
+TEST(DiskRadianceTest, FiniteNonNegativeForInnerRadiusBelowPhotonSphere) {
+  DiskParams p;
+  p.rInner = 1.2f;
+  p.rOuter = 12.0f;
+  for (float r : {1.2f, 1.3f, 1.4999f, 1.5f, 1.5001f, 1.7f, 3.0f, 12.0f}) {
+    for (float c : {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f}) {
+      const Vec3 v = disk::diskRadiance(r, c, p);
+      EXPECT_TRUE(std::isfinite(v.x) && std::isfinite(v.y) &&
+                  std::isfinite(v.z))
+          << "r " << r << " c " << c << ": " << v.x << " " << v.y << " "
+          << v.z;
+      EXPECT_GE(std::min({v.x, v.y, v.z}), 0.0f) << "r " << r << " c " << c;
+    }
+  }
+}
+
 // ---------------------------------------------------------------- Doppler cosine
 //
 // dopplerCosine(pos, vel): cosine, in the static observer's frame at the disk

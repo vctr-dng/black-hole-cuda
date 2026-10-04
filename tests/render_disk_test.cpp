@@ -953,4 +953,35 @@ TEST(RenderDiskTest, ApproachingToRecedingRatioMatchesExactDoppler) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 8. Inner radius below the photon sphere: no NaN radiance
+// ---------------------------------------------------------------------------
+
+TEST(RenderDiskTest, DiskRadianceIsFiniteForInnerRadiusBelowPhotonSphere) {
+  // CPU: NaN radiance is invisible after the byte quantisation (NaN -> 0), so
+  // inspect the unquantised radiance of every ray the reference sends into the
+  // disk. diskInner = 1.2 < 1.5 means crossings at r in [1.2, 1.5) exist (rays
+  // that then fall into the hole), where the unguarded gFactor is NaN.
+  std::size_t diskPx = 0, inside = 0, nonFinite = 0;
+  for (float el : {10.0f, 30.0f, 60.0f, 85.0f}) {
+    RenderConfig cfg = makeConfig(96, 54, el);
+    cfg.diskInner = 1.2f;
+    cfg.diskOuter = 12.0f;
+    const RefImage ref = refRender(cfg);
+    for (const RefPixel& p : ref.px) {
+      if (p.kind != Kind::Disk) continue;
+      ++diskPx;
+      inside += p.hitR < 1.5f;
+      const bool finite = std::isfinite(p.raw[0]) && std::isfinite(p.raw[1]) &&
+                          std::isfinite(p.raw[2]) && p.raw[0] >= 0.0f &&
+                          p.raw[1] >= 0.0f && p.raw[2] >= 0.0f;
+      nonFinite += !finite;
+    }
+  }
+  EXPECT_GT(diskPx, 2000u);
+  EXPECT_GT(inside, 20u) << "no ray crosses the plane inside the photon sphere";
+  EXPECT_EQ(nonFinite, 0u) << nonFinite << " of " << diskPx
+                           << " disk pixels have NaN/negative radiance";
+}
+
 }  // namespace
