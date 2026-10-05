@@ -261,3 +261,19 @@ TEST(RenderTest, RenderFlatReturnsImageWithRequestedSize) {
   EXPECT_EQ(image.width(), 16);
   EXPECT_EQ(image.height(), 9);
 }
+
+TEST(RenderConfigTest, ValidateObserverDistanceMustBeFiniteAndOutsideHorizon) {
+  RenderConfig c;
+  // The camera must sit strictly outside the horizon (r = rs = 1) and be
+  // finite: +inf, <= 1 and non-positive distances give black or garbage images.
+  for (const float d : {kInf, -kInf, kNaN, 1.0f, 0.5f, 0.01f, 0.0f, -5.0f}) {
+    c = RenderConfig{};
+    c.observerDistance = d;
+    expectRejected(c, "distance");
+  }
+  for (const float d : {1.5f, 2.0f, 20.0f, 1000.0f, 1.0e6f}) {
+    c = RenderConfig{};
+    c.observerDistance = d;
+    EXPECT_NO_THROW(blackhole::validate(c)) << "distance " << d;
+  }
+}

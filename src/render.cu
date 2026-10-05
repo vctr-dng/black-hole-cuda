@@ -295,8 +295,11 @@ void validate(const RenderConfig &config) {
   if (config.width <= 0 || config.height <= 0) {
     throw std::invalid_argument("render dimensions must be positive");
   }
-  if (!(config.observerDistance > 0.0f)) {
-    throw std::invalid_argument("observer distance must be positive");
+  if (!(std::isfinite(config.observerDistance) &&
+        config.observerDistance > 1.0f)) {
+    throw std::invalid_argument(
+        "observer distance must be finite and greater than the horizon "
+        "radius (1)");
   }
   if (!(config.fovDegrees > 0.0f && config.fovDegrees < 180.0f)) {
     throw std::invalid_argument("field of view must be in (0, 180) degrees");

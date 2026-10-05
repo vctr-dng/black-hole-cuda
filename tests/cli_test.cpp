@@ -256,3 +256,17 @@ TEST(CliTest, UsageMentionsEveryWiringFlag) {
     EXPECT_NE(text.find(flag), std::string::npos) << flag;
   }
 }
+
+TEST(CliTest, RejectsNonFiniteOrHorizonObserverDistance) {
+  // --distance must be finite and strictly outside the horizon (> 1).
+  expectErrorMentions({"--distance", "inf"}, "distance");
+  expectErrorMentions({"--distance=inf"}, "distance");
+  expectErrorMentions({"--distance", "1"}, "distance");
+  expectErrorMentions({"--distance", "0.5"}, "distance");
+  expectErrorMentions({"--distance", "-5"}, "distance");
+  expectErrorMentions({"--distance", "nan"}, "distance");
+  EXPECT_FLOAT_EQ(parseArgs({"--distance", "2"}).config.observerDistance,
+                  2.0f);
+  EXPECT_FLOAT_EQ(parseArgs({"--distance=1000"}).config.observerDistance,
+                  1000.0f);
+}
