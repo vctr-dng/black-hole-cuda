@@ -2,6 +2,8 @@
 
 CUDA renderer for a static Schwarzschild black hole: one GPU thread per pixel traces a light ray through the curved spacetime.
 
+![Schwarzschild black hole render](assets/black_hole_render.png)
+
 ## Requirements
 
 - gcc-14
